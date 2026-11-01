@@ -2,7 +2,7 @@
 
 **An original, human-governed decision-coordination research project built from the God Brain source lineage.**
 
-The creative premise is abstractly inspired by the idea of a coordinating intelligence in the television series *Travelers*. This project is **not** an official, canonical, affiliated, or character-accurate adaptation. It does not reproduce the show's characters, dialogue, setting, imagery, or fictional authority.
+The Director is named for its intended function: coordinating evidence, competing plans, decisions, and accountable follow-through around human-defined objectives. Its identity, scope, and constraints are defined by this project's own charter and tested contracts.
 
 The Director's proposed role is to help a human understand a situation, compare competing plans, recognize uncertainty and conflicts, and make deliberate decisions. **It is not an omniscient controller, autonomous authority, or a system permitted to intervene in people's lives.**
 
@@ -47,6 +47,40 @@ This repository was initialized from the exact Git history of [God Brain](https:
 The inherited [CURRENT.md](CURRENT.md), [WARDEN.md](WARDEN.md), [repository map](docs/REPOSITORY_MAP.md), historical qualification records, and HC/God Brain names describe their **original lineage**. Their former roles or permissions are **not** Director governance, identity, or deployment evidence. The history is preserved intentionally; selective adaptation will follow review.
 
 **Current claim ceiling:** A source-imported research foundation, deterministic advisory evaluation, complete-input private dossiers, opt-in **same-host** local storage and task coordination, and a deny-only authorization reference. There is no qualified autonomous Director service, live multi-host coordinator, authenticated respondent, or protected-effect deployment.
+
+## How it works today
+
+The Director currently runs as an **importable Python reference implementation**, not a background service. A caller supplies the mission, possible actions, declared evidence, and evaluation time. The code returns an advisory recommendation or `ABSTAIN`, with the reasons each proposal passed or failed. It makes no API calls, starts no agents, and performs no external actions.
+
+For example, run this Python code from the repository root:
+
+~~~python
+from datetime import datetime, timedelta, timezone
+from runtime.director.dossier import build_dossier
+
+now = datetime.now(timezone.utc)
+mission = {
+    "mission_id": "notes-review", "revision": 1,
+    "objective": "Compare no-cost ways to review notes",
+    "allowed_actions": ["analyze"], "allowed_targets": ["notes"],
+    "forbidden_targets": [], "max_cost_cents": 0,
+    "min_independent_evidence": 1,
+    "expires_at_utc": (now + timedelta(hours=1)).isoformat(),
+}
+proposals = [{
+    "proposal_id": "offline-review", "action": "analyze", "target": "notes",
+    "cost_cents": 0, "benefit_points": 20, "evidence_ids": ["observation-1"],
+}]
+evidence = [{
+    "evidence_id": "observation-1", "evidence_class": "OBSERVATION",
+    "source_ref": "manual-entry", "lineage_id": "operator-notes",
+}]
+dossier = build_dossier(mission, proposals, evidence, now_utc=now)
+print(dossier["decision"]["status"], dossier["decision"]["recommended_proposal_id"])
+# RECOMMENDATION_ONLY offline-review
+~~~
+
+The evidence origin in that example is a **caller-supplied claim**, not independently verified. `build_dossier()` returns the full private input-bound record in memory. You can explicitly serialize it, persist it with the opt-in local custody store, or submit its digest to the task ledger. None of those steps authorizes or executes the recommended action.
 
 ## First Director-specific function
 
@@ -104,7 +138,7 @@ Passing those checks validates only the behaviors exercised, not the proposed Di
 2. Qualify custody against trusted-path admission, data retention, privacy, backup/recovery, and any genuinely independent source attestation. Local hashes alone do not solve these.
 3. Design separately authenticated host ownership, revocation, replay defenses, and effect reconciliation before any future multi-host service or external effect. No protected action is authorized or activated by this reference.
 
-The first Director-specific milestone is a **defensible recommendation with a clear reason to abstain**, not an all-powerful fictional replica.
+The first Director-specific milestone is a **defensible recommendation with a clear reason to abstain**, not an autonomous general-intelligence service.
 
 ## Boundaries and cost
 
