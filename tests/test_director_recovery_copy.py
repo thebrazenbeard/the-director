@@ -7,6 +7,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,7 +32,7 @@ def approval(path: Path, *, goal_id: str = "recovery.goal", approved: bool = Tru
 
 
 def rowset(path: Path, table: str) -> list[tuple]:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         conn.row_factory = sqlite3.Row
         return [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
 
@@ -114,6 +115,7 @@ class PausedRecoveryCopyTests(unittest.TestCase):
         for permission in (approval(self.destination), approval(self.destination, approved=False),
                            approval(self.destination, goal_id="wrong.goal"),
                            {**approval(self.destination), "allow_historical_inflight": True},
+                           {**approval(self.destination), "destination_path": self.destination.name},
                            {**approval(self.destination), "destination_path": str(self.destination) + "-other"}):
             with self.assertRaises(ValueError):
                 stage_recovery_copy(self.source_path, self.destination,
@@ -124,6 +126,18 @@ class PausedRecoveryCopyTests(unittest.TestCase):
             stage_recovery_copy(self.source_path, self.destination,
                                 operator_approval=approval(self.destination, goal_id="wrong.goal"))
         self.assertFalse(self.destination.exists())
+
+    def test_equivalent_absolute_destination_spelling_is_approved(self):
+        self.coordinator.set_paused(True)
+        # On Windows Path.resolve may expand a RUNNER~1 component whereas
+        # Path.absolute retains the short spelling. Both bind to one target.
+        alternate = (self.destination.parent / ".." /
+                     self.destination.parent.name / self.destination.name)
+        self.assertTrue(alternate.is_absolute())
+        receipt = stage_recovery_copy(self.source_path, self.destination,
+                                      operator_approval={**approval(self.destination),
+                                                         "destination_path": str(alternate)})
+        self.assertTrue(receipt["quarantined"])
 
     def test_existing_destination_never_overwritten_and_no_partial_copy(self):
         self.coordinator.set_paused(True)
@@ -145,7 +159,7 @@ class PausedRecoveryCopyTests(unittest.TestCase):
 
     def test_rejects_malformed_source_schema_and_corrupt_local_attestation(self):
         bad_path = self.destination.with_name("bad.sqlite3")
-        with sqlite3.connect(bad_path) as conn:
+        with closing(sqlite3.connect(bad_path)) as conn:
             conn.execute("CREATE TABLE unrelated (some_text TEXT)")
         if os.name == "posix":
             bad_path.chmod(0o600)

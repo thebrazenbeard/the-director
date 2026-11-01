@@ -113,7 +113,12 @@ def _approval(raw: Mapping[str, object], destination: Path) -> str:
     if (raw["approved"] is not True or raw["purpose"] != "PAUSED_QUARANTINE_DATA_ONLY"
             or raw["allow_historical_inflight"] is not False):
         raise ValueError("recovery requires explicit no-activation approval")
-    if raw["destination_path"] != str(destination):
+    approved_path = raw["destination_path"]
+    # Windows may spell the same temporary directory using its short (8.3)
+    # component or expanded name. Bind to the same absolute filesystem target,
+    # not to an incidental spelling produced by Path.absolute()/resolve().
+    if (type(approved_path) is not str or not Path(approved_path).is_absolute()
+            or Path(approved_path).resolve(strict=False) != destination.resolve(strict=False)):
         raise ValueError("approval must bind the exact absolute destination path")
     return _id(raw["source_goal_id"], "source_goal_id")
 

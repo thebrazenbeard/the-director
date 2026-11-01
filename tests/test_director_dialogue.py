@@ -6,6 +6,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from runtime.director.dialogue import DirectorDialogue
@@ -175,7 +176,7 @@ class DirectorDialogueTests(unittest.TestCase):
 
     def test_existing_v04_dialogue_database_migrates_context_digest_additively(self):
         historical = Path(self.tmp.name) / "historical.sqlite3"
-        with sqlite3.connect(historical) as conn:
+        with closing(sqlite3.connect(historical)) as conn:
             conn.execute("""CREATE TABLE director_dialogue_messages (
                 thread_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL,
                 speaker_id TEXT NOT NULL, content TEXT NOT NULL, reply_to_seq INTEGER,

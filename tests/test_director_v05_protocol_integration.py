@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from runtime.director.auth_channel import AuthenticatedChannel
@@ -44,7 +45,8 @@ class V05AuthenticatedCoordinatorTests(unittest.TestCase):
         self.coordinator = DirectorCoordinator(self.path, self.mailbox,
                                                auth_channel=self.director_auth,
                                                sign_outbound=True)
-        self.addCleanup(self.coordinator.close)
+        # Cleanup must close whichever coordinator is current after restart tests.
+        self.addCleanup(lambda: self.coordinator.close())
         self.coordinator.configure(GOAL, CAPS, max_missions=4)
 
     def issue(self):
@@ -64,7 +66,7 @@ class V05AuthenticatedCoordinatorTests(unittest.TestCase):
                                  kind="SIGNED_ENVELOPE", payload={"envelope": raw.decode("ascii")})
 
     def admission_count(self):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             return db.execute("SELECT COUNT(*) FROM director_authenticated_admissions").fetchone()[0]
 
     def test_signed_outbound_worker_verifies_but_cannot_execute(self):
@@ -206,14 +208,14 @@ class V05AuthenticatedCoordinatorTests(unittest.TestCase):
                 self.coordinator.tick(auth_now_utc=150)
         finally:
             self.mailbox.send = original_send
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn:
             persisted = conn.execute("""SELECT outbound_envelope_json FROM
                 director_strategy_assignments""").fetchone()[0]
         self.assertIsInstance(persisted, str)
         with self.assertRaisesRegex(ValueError, "expired"):
             self.coordinator.tick(auth_now_utc=150 + 86400)
         self.assertEqual(self.mailbox.poll("worker_alpha"), [])
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn:
             self.assertEqual(conn.execute("""SELECT outbound_envelope_json FROM
                 director_strategy_assignments""").fetchone()[0], persisted)
 
