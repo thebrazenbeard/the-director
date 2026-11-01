@@ -43,7 +43,7 @@ _APPROVAL_FIELDS = frozenset({"approved", "owner_id", "target_domain", "allow_ro
 _COORDINATOR_FIELDS = frozenset({
     "goal", "world", "assignments", "reports", "operator_control", "status",
     "reason", "effect_status", "control_state", "cancellations", "graph",
-    "worker_stopped_verified", "authentication_mode",
+    "worker_stopped_verified", "authentication_mode", "recovery_quarantine",
 })
 _AGENT_FIELDS = frozenset({
     "new_instance_id", "agent_id", "restored_from_instance_id", "capsule_id",
@@ -133,13 +133,22 @@ def _snapshot(raw: Mapping[str, object]) -> dict[str, object]:
     if "worker_stopped_verified" in raw and raw["worker_stopped_verified"] is not False:
         raise ValueError("cannot restore a claim that a worker actually stopped")
     if "authentication_mode" in raw and raw["authentication_mode"] not in (
-        "ENFORCED_LOCAL_HMAC", "UNAUTHENTICATED_LOCAL"
+        "ENFORCED_LOCAL_HMAC", "ENFORCED_LOCAL_HMAC_BIDIRECTIONAL",
+        "UNAUTHENTICATED_LOCAL"
     ):
         raise ValueError("unsupported coordinator authentication mode")
     if "graph" in raw and raw["graph"] is not None:
         graph = raw["graph"]
         if not isinstance(graph, Mapping) or graph.get("configured") is not True:
             raise ValueError("coordinator graph snapshot has invalid reference metadata")
+    if "recovery_quarantine" in raw and raw["recovery_quarantine"] is not None:
+        quarantine = raw["recovery_quarantine"]
+        if (not isinstance(quarantine, Mapping) or quarantine.get("locked") != 1
+                or quarantine.get("schema_version") != "director.recovery-quarantine.v1"
+                or not isinstance(quarantine.get("source_goal_id"), str)
+                or not isinstance(quarantine.get("source_digest"), str)
+                or not isinstance(quarantine.get("source_auth_mode"), str)):
+            raise ValueError("coordinator quarantine snapshot is invalid")
     world = raw["world"]
     if not isinstance(world, Mapping) or type(world.get("revision")) is not int or world["revision"] < 0:
         raise ValueError("coordinator world revision is invalid")

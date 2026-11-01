@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from runtime.director.messenger import DirectorMailbox, MessageConflict
 
@@ -248,6 +249,70 @@ class DirectorMailboxTests(unittest.TestCase):
             self.skipTest("symlinks unavailable")
         with self.assertRaises(ValueError):
             DirectorMailbox(symlink)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX owner-only file policy")
+    def test_existing_main_database_must_remain_owner_only(self):
+        self.box.close()
+        for insecure in (0o644, 0o640, 0o620, 0o601, 0o666):
+            with self.subTest(mode=oct(insecure)):
+                os.chmod(self.path, insecure)
+                with self.assertRaisesRegex(ValueError, "owner-only"):
+                    DirectorMailbox(self.path)
+        os.chmod(self.path, 0o600)
+        with DirectorMailbox(self.path) as restored:
+            self.assertEqual(restored.poll("director"), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX owner-only sidecar policy")
+    def test_preexisting_wal_and_shm_must_remain_owner_only(self):
+        self.box.close()
+        for suffix in ("-wal", "-shm"):
+            sibling = self.path.with_name(self.path.name + suffix)
+            for insecure in (0o644, 0o620, 0o601, 0o666):
+                with self.subTest(sidecar=suffix, mode=oct(insecure)):
+                    sibling.write_bytes(b"")
+                    os.chmod(sibling, insecure)
+                    # If the pre-open guard regresses, do not let SQLite
+                    # map a deliberately corrupt, permissive WAL/SHM file.
+                    with patch("runtime.director.messenger.sqlite3.connect",
+                               side_effect=AssertionError("must reject before SQLite opens")):
+                        with self.assertRaisesRegex(ValueError, "owner-only"):
+                            DirectorMailbox(self.path)
+                    sibling.unlink()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX sidecar path validation")
+    def test_preexisting_sidecar_symlink_or_directory_rejected(self):
+        self.box.close()
+        target = Path(self.tmp.name) / "target.txt"
+        target.write_text("private data", encoding="utf-8")
+        for suffix in ("-wal", "-shm"):
+            sibling = self.path.with_name(self.path.name + suffix)
+            try:
+                sibling.symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with self.subTest(sidecar=suffix, type="symlink"):
+                with patch("runtime.director.messenger.sqlite3.connect",
+                           side_effect=AssertionError("must reject before SQLite opens")):
+                    with self.assertRaisesRegex(ValueError, "symlink"):
+                        DirectorMailbox(self.path)
+            sibling.unlink()
+            sibling.mkdir()
+            with self.subTest(sidecar=suffix, type="directory"):
+                with patch("runtime.director.messenger.sqlite3.connect",
+                           side_effect=AssertionError("must reject before SQLite opens")):
+                    with self.assertRaisesRegex(ValueError, "regular file"):
+                        DirectorMailbox(self.path)
+            sibling.rmdir()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX private WAL/SHM policy")
+    def test_private_live_wal_sidecars_allow_second_connection(self):
+        self.send("live-message")
+        for suffix in ("-wal", "-shm"):
+            sidecar = self.path.with_name(self.path.name + suffix)
+            self.assertTrue(sidecar.is_file())
+            self.assertEqual(stat.S_IMODE(sidecar.stat().st_mode), 0o600)
+        with DirectorMailbox(self.path) as second:
+            self.assertEqual(second.poll("analyst_01")[0]["message_id"], "live-message")
 
 
 if __name__ == "__main__":

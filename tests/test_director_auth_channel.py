@@ -89,6 +89,50 @@ class AuthenticatedChannelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "replay"):
                 reopened.verify(raw, expected_recipient="analyst", now_utc=NOW + 2)
 
+    def test_signature_inspection_is_pure_and_requires_atomic_caller_replay_admission(self):
+        raw = self.envelope()
+        first = self.channel.inspect_signature(raw, expected_recipient="analyst",
+                                               now_utc=NOW + 1)
+        second = self.channel.inspect_signature(raw, expected_recipient="analyst",
+                                                now_utc=NOW + 1)
+        self.assertEqual(first, second)
+        self.assertTrue(first["sender_authenticated"])
+        self.assertFalse(first["replay_admitted"])
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM authenticated_replay").fetchone()[0], 0)
+        consumed = self.verify(raw)
+        self.assertTrue(consumed["replay_admitted"])
+        with self.assertRaisesRegex(ValueError, "replay"):
+            self.verify(raw)
+        # Inspection itself still doesn't enforce replay, even after another
+        # adapter has consumed it. The coordinator MUST bind that identity to
+        # its own report row in a single transaction.
+        self.assertFalse(self.channel.inspect_signature(
+            raw, expected_recipient="analyst", now_utc=NOW + 1)["replay_admitted"])
+
+    def test_inspection_enforces_key_route_expiry_revocation_without_consuming(self):
+        raw = self.envelope()
+        self.assertTrue(self.channel.has_sender_key("director"))
+        self.assertFalse(self.channel.has_sender_key("unconfigured"))
+        with self.assertRaises(ValueError):
+            self.channel.has_sender_key("invalid id")
+        for opts in (dict(expected_recipient="intruder", now_utc=NOW + 1),
+                     dict(expected_recipient="analyst", now_utc=NOW + 300),
+                     dict(expected_recipient="analyst", now_utc=NOW - 1)):
+            with self.subTest(opts=opts), self.assertRaises(ValueError):
+                self.channel.inspect_signature(raw, **opts)
+        tampered = json.loads(raw)
+        tampered["payload"] = {"goal": "tampered"}
+        with self.assertRaisesRegex(ValueError, "MAC|signature"):
+            self.channel.inspect_signature(json.dumps(tampered).encode("ascii"),
+                                           expected_recipient="analyst", now_utc=NOW + 1)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM authenticated_replay").fetchone()[0], 0)
+        self.channel.revoke_sender("director")
+        self.assertFalse(self.channel.has_sender_key("director"))
+        with self.assertRaisesRegex(ValueError, "revoked"):
+            self.channel.inspect_signature(raw, expected_recipient="analyst", now_utc=NOW + 1)
+
     def test_distinct_message_same_nonce_and_distinct_nonce_same_id_rejected(self):
         self.verify(self.envelope())
         for raw in (self.envelope(message_id="mission.02"),

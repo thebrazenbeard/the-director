@@ -19,6 +19,7 @@ import math
 import os
 import re
 import sqlite3
+import stat
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -97,6 +98,31 @@ def _payload_json(payload: object) -> str:
     return encoded
 
 
+def _check_existing_mailbox_files(path: Path) -> None:
+    """Refuse unsafe pre-existing local SQLite main/WAL/SHM files.
+
+    On POSIX, other-user access to an unencrypted mailbox or its WAL/SHM
+    sidecars leaks content and may allow tampering. This is a static pathname
+    check; the operator must also protect the directory from concurrent file
+    replacement by an untrusted process. On Windows, OS-managed ACLs remain
+    the operator's responsibility.
+    """
+    if os.name != "posix":
+        return
+    for member in (path, path.with_name(path.name + "-wal"),
+                   path.with_name(path.name + "-shm")):
+        if member.is_symlink():
+            raise ValueError("mailbox database files cannot be symlinks")
+        try:
+            metadata = member.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("mailbox database files must be regular files")
+        if metadata.st_mode & 0o077:
+            raise ValueError("existing plaintext mailbox database files must be owner-only (0600)")
+
+
 class DirectorMailbox:
     """Explicit single-host SQLite inbox/outbox with durable acknowledgments.
 
@@ -115,8 +141,9 @@ class DirectorMailbox:
         if self.path.exists() and not self.path.is_file():
             raise ValueError("existing mailbox path must be a regular file")
 
-        # Create new POSIX databases owner-only. Existing file permissions
-        # remain the operator's responsibility; messages are unencrypted.
+        _check_existing_mailbox_files(self.path)
+        # Create new POSIX databases owner-only. Recheck pre-existing
+        # sidecars before SQLite can open its WAL/shared-memory state.
         flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
         try:
             descriptor = os.open(self.path, flags, 0o600)
@@ -125,6 +152,7 @@ class DirectorMailbox:
                 raise ValueError("database must not be a symlink")
         else:
             os.close(descriptor)
+        _check_existing_mailbox_files(self.path)
 
         self._conn: sqlite3.Connection | None = sqlite3.connect(
             self.path, timeout=5.0, isolation_level=None

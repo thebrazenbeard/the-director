@@ -12,16 +12,16 @@ that the clock is trusted. A durable local SQLite replay/revocation ledger is
 created only by explicit constructor call. It is plaintext; secret key bytes
 are never written to it. Protect the directory and keys at the host boundary.
 
-The ``DirectorCoordinator`` can opt into authenticated *incoming worker*
-reports by explicitly receiving an ``AuthenticatedChannel`` at construction
-and verifying a signed envelope on each tick. Outbound Director assignments
-and cancellation notices are still unsigned local mailbox messages. Importing
-this module does not silently change any mailbox's trust level or grant effect
-authority. Verifying an envelope commits its replay marker before returning. A
-crash before a separate downstream delivery commit can therefore lose a valid
-message. A future bridge must adopt messages and replay markers transactionally
-or use a durable delivery/recovery journal; this module does not promise
-exactly-once end-to-end transport.
+``DirectorCoordinator`` may opt into authenticated incoming worker reports.
+In fresh ``sign_outbound=True`` mode, it also persists signed local mission
+instructions and commits incoming replay admission together with the report
+in its OWN SQLite transaction, using this class's non-consuming
+``inspect_signature`` verifier. Existing v0.4 incoming-only coordinator mode
+still uses ``verify`` below, whose separate replay commit can lose a report
+on a downstream crash. Even in the new mode, worker-side ``verify`` consumes
+its own replay marker before application handling. Neither mode provides
+exactly-once end-to-end transport, independent Director identity, or effect
+authority. Importing this module changes no mailbox trust level by itself.
 """
 
 from __future__ import annotations
@@ -304,6 +304,17 @@ class AuthenticatedChannel:
             raise ValueError("sender has no configured authentication key")
         return secret
 
+    def has_sender_key(self, sender_id: str) -> bool:
+        """Whether a route-specific signing key is configured and not revoked.
+
+        This is an operational preflight, NOT proof of exclusive control of
+        the key or authority of the named party. It exposes no key bytes.
+        """
+        self._connection()
+        sender = _identifier(sender_id, "sender_id")
+        return (sender in self._keys
+                and not self._is_revoked(self._connection(), sender))
+
     @staticmethod
     def _is_revoked(conn: sqlite3.Connection, sender: str) -> bool:
         row = conn.execute("SELECT 1 FROM authenticated_revocation WHERE sender_id=?", (sender,)).fetchone()
@@ -374,6 +385,38 @@ class AuthenticatedChannel:
         exclusive custody of the sender's configured symmetric key. The replay
         ledger records ID/nonce/route/time, *not* payload or secret keys.
         """
+        checked = self.inspect_signature(envelope, expected_recipient=expected_recipient,
+                                         now_utc=now_utc)
+        now = _epoch(now_utc, "now_utc")
+        sender = checked["authenticated_sender_id"]
+        with self._transaction() as conn:
+            if self._is_revoked(conn, sender):
+                raise ValueError("sender has been revoked")
+            try:
+                conn.execute("""INSERT INTO authenticated_replay(
+                    sender_id,message_id,nonce,recipient_id,verified_at)
+                    VALUES(?,?,?,?,?)""",
+                    (sender, checked["message_id"], checked["nonce"],
+                     checked["recipient_id"], now))
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("replay or reused sender message identifier/nonce") from exc
+        return {**checked, "replay_admitted": True}
+
+    def inspect_signature(
+        self, envelope: bytes, *, expected_recipient: str, now_utc: int,
+    ) -> dict[str, object]:
+        """Check MAC, route, validity window and revocation WITHOUT replay admission.
+
+        This is deliberately **not** a sufficient authorization or freshness
+        receipt. Repeated calls on the same bytes succeed while a signature is
+        valid; callers MUST atomically enforce replay uniqueness in the same
+        durable database transaction as their own downstream state change.
+        The Director coordinator's signed-ingress flow is such a caller.
+
+        Never use this method alone to authorize or execute worker effects.
+        When no shared transactional replay ledger exists, use ``verify``
+        instead and accept its explicitly narrower cross-database guarantee.
+        """
         self._connection()
         expected_recipient = _identifier(expected_recipient, "expected_recipient")
         now = _epoch(now_utc, "now_utc")
@@ -390,23 +433,16 @@ class AuthenticatedChannel:
         expected_mac = hmac.new(secret, _DOMAIN + _canonical(body), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(parsed["mac"], expected_mac):
             raise ValueError("envelope MAC/signature verification failed")
-        with self._transaction() as conn:
-            if self._is_revoked(conn, sender):
-                raise ValueError("sender has been revoked")
-            try:
-                conn.execute("""INSERT INTO authenticated_replay(
-                    sender_id,message_id,nonce,recipient_id,verified_at)
-                    VALUES(?,?,?,?,?)""",
-                    (sender, parsed["message_id"], parsed["nonce"], parsed["recipient_id"], now))
-            except sqlite3.IntegrityError as exc:
-                raise ValueError("replay or reused sender message identifier/nonce") from exc
+        if self._is_revoked(self._connection(), sender):
+            raise ValueError("sender has been revoked")
         return {"authenticated_sender_id": sender,
                 "sender_authenticated": True,
                 "authentication_scope": "OPERATOR_SUPPLIED_SYMMETRIC_KEY",
                 "recipient_id": expected_recipient, "message_id": parsed["message_id"],
                 "nonce": parsed["nonce"], "kind": parsed["kind"], "payload": parsed["payload"],
                 "issued_at": parsed["issued_at"], "expires_at": parsed["expires_at"],
-                "effect_authority": "NOT_GRANTED", "effect_status": "NOT_EXECUTED"}
+                "effect_authority": "NOT_GRANTED", "effect_status": "NOT_EXECUTED",
+                "replay_admitted": False}
 
 
 __all__ = ["AuthenticatedChannel", "PROTOCOL"]

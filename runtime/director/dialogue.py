@@ -15,6 +15,7 @@ never permission to alter the mission or operate a host.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .strategy import generate_candidates
+from .reasoning import _parse_hypotheses
 
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}\Z")
@@ -34,6 +36,7 @@ _MAX_ANSWER = 2048
 _MAX_WORLD_BYTES = 128 * 1024
 _MAX_GOAL_BYTES = 16 * 1024
 _MAX_ALTERNATIVES_BYTES = 32 * 1024
+_MAX_HYPOTHESES_BYTES = 64 * 1024
 _MAX_THREADS = 64
 _MAX_MESSAGES_PER_THREAD = 256
 _HISTORY_WINDOW = 40
@@ -126,10 +129,16 @@ class DirectorDialogue:
                 basis_json TEXT NOT NULL,
                 uncertainty TEXT NOT NULL,
                 world_revision INTEGER,
+                context_digest TEXT,
                 created_at_utc TEXT NOT NULL,
                 PRIMARY KEY(thread_id,seq),
                 UNIQUE(thread_id,reply_to_seq)
             )""")
+            # Additive migration: legacy conversations retain their original
+            # question/reply revisions but lack a full input-context digest.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(director_dialogue_messages)")}
+            if "context_digest" not in columns:
+                conn.execute("ALTER TABLE director_dialogue_messages ADD COLUMN context_digest TEXT")
         except BaseException:
             self.close()
             raise
@@ -221,6 +230,7 @@ class DirectorDialogue:
                 "content": row["content"], "reply_to_seq": row["reply_to_seq"],
                 "status": row["status"], "basis": json.loads(row["basis_json"]),
                 "uncertainty": row["uncertainty"], "world_revision": row["world_revision"],
+                "context_digest": row["context_digest"],
                 "created_at_utc": row["created_at_utc"],
                 "sender_authenticated": False, "effect_authority": "NOT_GRANTED",
                 "effect_status": "NOT_EXECUTED"}
@@ -245,12 +255,15 @@ class DirectorDialogue:
 
     def ask(self, thread_id: str, prompt: str, *, world_snapshot: Mapping[str, object],
             speaker_id: str = "operator",
-            alternatives: Sequence[Mapping[str, object]] = ()) -> dict[str, object]:
+            alternatives: Sequence[Mapping[str, object]] = (),
+            hypotheses: Sequence[Mapping[str, object]] = ()) -> dict[str, object]:
         thread_id = _identifier(thread_id, "thread_id")
         speaker_id = _identifier(speaker_id, "speaker_id")
         prompt = _text(prompt, "prompt", _MAX_QUESTION)
         world_json, revision = self._world(world_snapshot)
         alternatives_json = self._alternatives(alternatives)
+        hypotheses_json = self._hypotheses(hypotheses)
+        context_digest = self._context_digest(world_json, alternatives_json, hypotheses_json)
         with self._transaction() as conn:
             thread = self._thread(conn, thread_id)
             if thread["paused"]:
@@ -263,10 +276,11 @@ class DirectorDialogue:
                 raise ValueError("dialogue thread capacity exhausted")
             conn.execute("""INSERT INTO director_dialogue_messages
                 (thread_id,seq,role,speaker_id,content,reply_to_seq,status,basis_json,
-                 uncertainty,world_revision,created_at_utc)
-                VALUES(?,?,'USER',?,?,NULL,'DECLARED_UNVERIFIED','[]','',?,?)""",
-                (thread_id, row["s"] + 1, speaker_id, prompt, revision, _utc()))
-        return self._complete(thread_id, world_json, revision, alternatives_json)
+                 uncertainty,world_revision,context_digest,created_at_utc)
+                VALUES(?,?,'USER',?,?,NULL,'DECLARED_UNVERIFIED','[]','',?,?,?)""",
+                (thread_id, row["s"] + 1, speaker_id, prompt, revision, context_digest, _utc()))
+        return self._complete(thread_id, world_json, revision, alternatives_json,
+                              hypotheses_json, context_digest, "PINNED_CONTEXT")
 
     @staticmethod
     def _world(world_snapshot: Mapping[str, object]) -> tuple[str, int]:
@@ -285,15 +299,35 @@ class DirectorDialogue:
             raise ValueError("alternatives must contain mappings")
         return _json([dict(item) for item in alternatives], "alternatives", _MAX_ALTERNATIVES_BYTES)
 
+    @staticmethod
+    def _hypotheses(hypotheses: Sequence[Mapping[str, object]]) -> str:
+        # Reuse the exact engine validation before persisting the USER turn.
+        parsed = _parse_hypotheses(hypotheses)
+        return _json(parsed, "hypotheses", _MAX_HYPOTHESES_BYTES)
+
+    @staticmethod
+    def _context_digest(world_json: str, alternatives_json: str, hypotheses_json: str) -> str:
+        envelope = (b"director.dialogue.context.v1\x00" + world_json.encode("ascii") + b"\x00"
+                    + alternatives_json.encode("ascii") + b"\x00" + hypotheses_json.encode("ascii"))
+        return hashlib.sha256(envelope).hexdigest()
+
     def resume(self, thread_id: str, *, world_snapshot: Mapping[str, object],
-               alternatives: Sequence[Mapping[str, object]] = ()) -> dict[str, object]:
+               alternatives: Sequence[Mapping[str, object]] = (),
+               hypotheses: Sequence[Mapping[str, object]] = (),
+               context_policy: str = "FRESH_REAPPRAISAL") -> dict[str, object]:
         thread_id = _identifier(thread_id, "thread_id")
+        if context_policy not in ("FRESH_REAPPRAISAL", "PINNED_CONTEXT"):
+            raise ValueError("context_policy must explicitly name a supported recovery policy")
         world_json, revision = self._world(world_snapshot)
         alternatives_json = self._alternatives(alternatives)
-        return self._complete(thread_id, world_json, revision, alternatives_json)
+        hypotheses_json = self._hypotheses(hypotheses)
+        context_digest = self._context_digest(world_json, alternatives_json, hypotheses_json)
+        return self._complete(thread_id, world_json, revision, alternatives_json,
+                              hypotheses_json, context_digest, context_policy)
 
     def _complete(self, thread_id: str, world_json: str, revision: int,
-                  alternatives_json: str) -> dict[str, object]:
+                  alternatives_json: str, hypotheses_json: str,
+                  context_digest: str, context_policy: str) -> dict[str, object]:
         conn = self._connection()
         thread = self._thread(conn, thread_id)
         if thread["paused"]:
@@ -301,6 +335,8 @@ class DirectorDialogue:
         pending = self._pending(conn, thread_id)
         if pending is None:
             raise ValueError("no pending question to resume")
+        if context_policy == "PINNED_CONTEXT" and pending["context_digest"] != context_digest:
+            raise ValueError("pending question pinned context differs from current evidence and alternatives")
         prior_rows = list(conn.execute("""SELECT role,content FROM director_dialogue_messages
             WHERE thread_id=? AND seq<? ORDER BY seq DESC LIMIT ?""",
             (thread_id, pending["seq"], _HISTORY_WINDOW)))
@@ -317,6 +353,7 @@ class DirectorDialogue:
             "turn_index": pending["seq"],
             "history_truncated": len(prior_rows) == _HISTORY_WINDOW,
             "alternatives": json.loads(alternatives_json),
+            "hypotheses": json.loads(hypotheses_json),
         })
         if not isinstance(response, Mapping):
             raise ValueError("reasoner response must be a mapping")
@@ -356,16 +393,19 @@ class DirectorDialogue:
                                        (thread_id,)).fetchone()[0]
                 conn.execute("""INSERT INTO director_dialogue_messages
                     (thread_id,seq,role,speaker_id,content,reply_to_seq,status,basis_json,
-                     uncertainty,world_revision,created_at_utc)
-                    VALUES(?,?,'DIRECTOR','director',?,?,?,?,?,?,?)""",
+                     uncertainty,world_revision,context_digest,created_at_utc)
+                    VALUES(?,?,'DIRECTOR','director',?,?,?,?,?,?,?,?)""",
                     (thread_id, max_seq + 1, answer, pending["seq"], status,
-                     basis_json, uncertainty, revision, _utc()))
+                     basis_json, uncertainty, revision, context_digest, _utc()))
                 existing = conn.execute("""SELECT * FROM director_dialogue_messages
                     WHERE thread_id=? AND reply_to_seq=?""",
                     (thread_id, pending["seq"])).fetchone()
             question = conn.execute("""SELECT * FROM director_dialogue_messages
                 WHERE thread_id=? AND seq=?""", (thread_id, pending["seq"])).fetchone()
         return {"question": self._message(question), "reply": self._message(existing),
+                "context_policy": context_policy,
+                "context_changed": (None if question["context_digest"] is None
+                                    else question["context_digest"] != existing["context_digest"]),
                 "effect_status": "NOT_EXECUTED", "sender_authenticated": False}
 
 

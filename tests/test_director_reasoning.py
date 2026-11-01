@@ -105,6 +105,88 @@ class ReasonerTests(unittest.TestCase):
         ])
         self.assertEqual(result[0]["classification"], "UNRESOLVED")
 
+    def test_proposes_missing_measurement_that_separates_viable_rivals(self):
+        rivals = [
+            {"hypothesis_id": "h1", "predictions": {"gate": 1, "signal": "red"}},
+            {"hypothesis_id": "h2", "predictions": {"gate": 1, "signal": "blue"}},
+            {"hypothesis_id": "h3", "predictions": {"gate": 1}},
+        ]
+        result = self.r.suggest_discriminating_observations(world(gate=1), rivals)
+        self.assertEqual(result["status"], "PROPOSED_OBSERVATIONS")
+        self.assertEqual([x["metric"] for x in result["observations"]], ["signal"])
+        self.assertEqual(result["observations"][0]["distinguished_pair_count"], 1)
+        self.assertEqual(result["observations"][0]["hypothesis_pairs"], [["h1", "h2"]])
+        self.assertEqual(result["effect_status"], "NOT_EXECUTED")
+        self.assertEqual(result["probability_status"], "NOT_INFERRED")
+
+    def test_discriminating_metrics_rank_by_pair_count_then_name(self):
+        rivals = [
+            {"hypothesis_id": "a", "predictions": {"p": 1, "q": True}},
+            {"hypothesis_id": "b", "predictions": {"p": 2, "q": True}},
+            {"hypothesis_id": "c", "predictions": {"p": 3, "q": False}},
+        ]
+        result = self.r.suggest_discriminating_observations(world(), rivals)
+        self.assertEqual([(x["metric"], x["distinguished_pair_count"]) for x in result["observations"]],
+                         [("p", 3), ("q", 2)])
+        reordered = self.r.suggest_discriminating_observations(world(), list(reversed(rivals)))
+        self.assertEqual(result["observations"], reordered["observations"])
+
+    def test_existing_observation_eliminates_contradiction_and_contested_rechecks(self):
+        rivals = [
+            {"hypothesis_id": "good_a", "predictions": {"readiness": 3, "signal": 1}},
+            {"hypothesis_id": "good_b", "predictions": {"readiness": 3, "signal": 2}},
+            {"hypothesis_id": "bad", "predictions": {"readiness": 9, "signal": 3}},
+        ]
+        result = self.r.suggest_discriminating_observations(world(), rivals)
+        self.assertEqual(result["excluded_hypothesis_ids"], ["bad"])
+        self.assertEqual(result["viable_hypothesis_ids"], ["good_a", "good_b"])
+        self.assertEqual(result["observations"][0]["metric"], "signal")
+        self.assertNotIn("readiness", [x["metric"] for x in result["observations"]])
+        contested = {"revision": 3, "facts": {"signal": {"status": "CONTESTED", "value": None,
+                                                            "evidence_ids": ["x", "y"]}}}
+        result = self.r.suggest_discriminating_observations(contested, rivals)
+        self.assertEqual(result["observations"][0]["priority"], "REVERIFY_CONFLICT")
+
+    def test_predictions_are_type_strict_and_missing_not_disagreements(self):
+        rivals = [
+            {"hypothesis_id": "bool", "predictions": {"flag": True}},
+            {"hypothesis_id": "numeric", "predictions": {"flag": 1}},
+            {"hypothesis_id": "missing", "predictions": {}},
+        ]
+        result = self.r.suggest_discriminating_observations(world(), rivals)
+        self.assertEqual(result["observations"][0]["distinguished_pair_count"], 1)
+        self.assertEqual(result["observations"][0]["hypothesis_pairs"], [["bool", "numeric"]])
+        self.assertEqual(result["viable_hypothesis_ids"], ["bool", "missing", "numeric"])
+
+    def test_no_false_probe_with_one_viable_or_identical_predictions(self):
+        rivals = [
+            {"hypothesis_id": "a", "predictions": {"readiness": 3, "flag": True}},
+            {"hypothesis_id": "b", "predictions": {"readiness": 9, "flag": False}},
+        ]
+        only_one = self.r.suggest_discriminating_observations(world(), rivals)
+        self.assertEqual(only_one["status"], "NEEDS_RIVAL_HYPOTHESES")
+        self.assertEqual(only_one["observations"], [])
+        same = self.r.suggest_discriminating_observations(world(), [
+            {"hypothesis_id": "a", "predictions": {"flag": True}},
+            {"hypothesis_id": "b", "predictions": {"flag": True}},
+        ])
+        self.assertEqual(same["status"], "NO_DISCRIMINATING_OBSERVATION")
+
+    def test_responds_with_probe_and_specific_falsifier_without_claiming_truth(self):
+        context = {"goal": GOAL, "world_snapshot": world(), "hypotheses": [
+            {"hypothesis_id": "rain", "predictions": {"sky": "dark"}},
+            {"hypothesis_id": "sun", "predictions": {"sky": "bright"}},
+        ]}
+        answer = self.r.respond("Which observation would distinguish these hypotheses?", context=context)
+        self.assertEqual(answer["status"], "DISCRIMINATING_OBSERVATION")
+        self.assertIn("sky", answer["answer"])
+        self.assertIn("not proof", answer["answer"].lower())
+        falsifier = self.r.respond("What would disprove hypothesis rain?", context=context)
+        self.assertEqual(falsifier["status"], "CONDITIONAL_FALSIFIER")
+        self.assertIn("rain", falsifier["answer"])
+        self.assertIn("dark", falsifier["answer"])
+        self.assertFalse(falsifier["source_authenticated"])
+
     def test_boolean_and_text_hypotheses_keep_types_distinct(self):
         state = WorldState()
         for ident, key, value in (("bool", "completed.task", True), ("text", "message", "ready")):

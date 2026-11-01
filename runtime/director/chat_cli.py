@@ -33,7 +33,7 @@ from typing import TextIO
 
 from .coordinator import DirectorCoordinator
 from .dialogue import DirectorDialogue
-from .reasoning import LocalReasoner
+from .reasoning import LocalReasoner, _parse_hypotheses
 from .strategy import generate_candidates
 from .world_state import WorldState
 
@@ -61,6 +61,11 @@ def _parser() -> argparse.ArgumentParser:
                               help="Optional prebuilt WorldState.snapshot() JSON file, read only.")
     observations.add_argument("--coordinator-db", type=Path,
                               help="Read the current goal and declared world events from an existing local coordinator DB, read only.")
+    parser.add_argument("--hypotheses-json", type=Path,
+                        help="Optional local JSON list of bounded rival hypotheses/predictions, read only.")
+    parser.add_argument("--resume-policy", choices=("FRESH_REAPPRAISAL", "PINNED_CONTEXT"),
+                        default="FRESH_REAPPRAISAL",
+                        help="On a pending question, reappraise against fresh context (default) or require the exact original context digest.")
     return parser
 
 
@@ -156,12 +161,49 @@ def _world(args: argparse.Namespace, metric: str) -> dict[str, object]:
     return world.snapshot()
 
 
+def _load_hypotheses(path: Path | None) -> list[dict[str, object]]:
+    """Admit only operator-selected, bounded local rival predictions.
+
+    Validate before touching the conversation database. Predictions never
+    become WorldState observations or privileged instructions.
+    """
+    if path is None:
+        return []
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024:
+        raise ValueError("--hypotheses-json must be an existing, bounded, regular local JSON file")
+    raw_bytes = path.read_bytes()
+    if len(raw_bytes) > 64 * 1024:
+        raise ValueError("--hypotheses-json must be bounded")
+
+    def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate hypotheses JSON field")
+            value[key] = item
+        return value
+
+    try:
+        raw = json.loads(raw_bytes.decode("utf-8"), object_pairs_hook=unique_pairs,
+                         parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise ValueError("--hypotheses-json must be valid bounded UTF-8 JSON with unique keys") from exc
+    return _parse_hypotheses(raw)
+
+
 def _show_history(dialogue: DirectorDialogue, thread: str, out: TextIO) -> None:
     turns = dialogue.history(thread, limit=256)
     if not turns:
         print("(No turns yet.)", file=out)
+    questions = {turn["seq"]: turn for turn in turns if turn["role"] == "USER"}
     for turn in turns:
-        print(f"[{turn['seq']}] {turn['role'].lower()}: {turn['content']}", file=out)
+        detail = f" [world revision {turn['world_revision']}]"
+        question = questions.get(turn["reply_to_seq"])
+        if (question is not None and question["context_digest"] is not None
+                and question["context_digest"] != turn["context_digest"]):
+            detail = (f" [world revision {turn['world_revision']}; reappraised from "
+                      f"question revision {question['world_revision']}]")
+        print(f"[{turn['seq']}] {turn['role'].lower()}: {turn['content']}{detail}", file=out)
 
 
 def run_chat(argv: Sequence[str] | None = None, *, stdin: TextIO | None = None,
@@ -176,6 +218,7 @@ def run_chat(argv: Sequence[str] | None = None, *, stdin: TextIO | None = None,
     args = _parser().parse_args(argv)
     try:
         requested_goal = _declared_goal(args)
+        hypotheses = _load_hypotheses(args.hypotheses_json)
         if not args.database.parent.is_dir():
             raise ValueError("database parent directory must already exist")
         if args.coordinator_db is not None and args.database.resolve(strict=False) == args.coordinator_db.resolve(strict=False):
@@ -246,7 +289,9 @@ def run_chat(argv: Sequence[str] | None = None, *, stdin: TextIO | None = None,
                     try:
                         snapshot, options = current_context()
                         result = dialogue.resume(args.thread, world_snapshot=snapshot,
-                                                 alternatives=options)
+                                                 alternatives=options,
+                                                 hypotheses=hypotheses,
+                                                 context_policy=args.resume_policy)
                     except ValueError as exc:
                         if "no pending question" not in str(exc):
                             print(f"Resume error: {exc}", file=stream_out)
@@ -254,6 +299,9 @@ def run_chat(argv: Sequence[str] | None = None, *, stdin: TextIO | None = None,
                     except Exception as exc:
                         print(f"Resume error: {type(exc).__name__}: {exc}", file=stream_out)
                         continue
+                    if result["context_changed"]:
+                        print("Pending question reappraised against fresh declared context; original and answer revisions are recorded.",
+                              file=stream_out)
                     print("Director: " + result["reply"]["content"], file=stream_out)
                     continue
                 if question.startswith("/"):
@@ -262,7 +310,7 @@ def run_chat(argv: Sequence[str] | None = None, *, stdin: TextIO | None = None,
                 try:
                     snapshot, options = current_context()
                     result = dialogue.ask(args.thread, question, world_snapshot=snapshot,
-                                          alternatives=options)
+                                          alternatives=options, hypotheses=hypotheses)
                 except (ValueError, RuntimeError) as exc:
                     print(f"Not answered: {exc}", file=stream_out)
                     continue

@@ -3,12 +3,15 @@
 The coordinator consumes an operator-supplied objective and a registered catalog
 of *analytical* agent capabilities. It generates missions from the current
 world-state snapshot, deposits assignments into a recipient-specific local
-mailbox, and records replies as UNVERIFIED claims. It never launches agents,
-uses a network, executes commands, or converts messages into trusted evidence.
+mailbox, and records replies as UNVERIFIED evidence claims. A fresh opt-in
+bidirectional mode persists signed command envelopes and atomically admits
+HMAC worker replies into its own replay/report ledger. It never launches agents,
+uses a network, executes commands, or upgrades reports into trusted evidence.
 
-The two SQLite files (coordinator and mailbox) cannot commit atomically.
-Durable assignment intents and deterministic mailbox message IDs make delivery
-idempotently recoverable after a crash; there is no cross-host guarantee.
+The coordinator and mailbox SQLite files cannot commit atomically. Durable
+assignment intents, immutable signed bytes and deterministic mailbox IDs make
+local delivery idempotently recoverable after a partial crash; there is no
+cross-host or worker-side exactly-once guarantee.
 The operator methods here are a local *interface*, not an authentication or
 secure-approval boundary. Restrict filesystem/process access accordingly.
 """
@@ -20,6 +23,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
@@ -57,12 +61,36 @@ def _json(value: object, *, limit: int) -> str:
     return payload
 
 
+def _check_existing_coordinator_files(path: Path) -> None:
+    """Reject exposed plaintext coordinator/main/WAL/SHM paths on POSIX.
+
+    Static checks require an operator-controlled private parent directory to
+    guard against same-UID or pathname-replacement attacks. Windows ACLs are
+    the host operator's responsibility.
+    """
+    if os.name != "posix":
+        return
+    for member in (path, path.with_name(path.name + "-wal"),
+                   path.with_name(path.name + "-shm")):
+        if member.is_symlink():
+            raise ValueError("coordinator database files cannot be symlinks")
+        try:
+            info = member.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("coordinator database files must be regular files")
+        if info.st_mode & 0o077:
+            raise ValueError("existing plaintext coordinator database files must be owner-only (0600)")
+
+
 def _make_database(path: str | Path) -> sqlite3.Connection:
     if not isinstance(path, (str, Path)) or str(path) in ("", ":memory:"):
         raise ValueError("a durable coordinator SQLite file path is required")
     filename = Path(path)
     if filename.is_symlink() or not filename.parent.is_dir():
         raise ValueError("database path must have an existing parent and not be a symlink")
+    _check_existing_coordinator_files(filename)
     flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     try:
         handle = os.open(filename, flags, 0o600)
@@ -71,6 +99,7 @@ def _make_database(path: str | Path) -> sqlite3.Connection:
             raise ValueError("database file must not be a symlink")
     else:
         os.close(handle)
+    _check_existing_coordinator_files(filename)
     conn = sqlite3.connect(filename, isolation_level=None, timeout=5.0)
     conn.row_factory = sqlite3.Row
     try:
@@ -102,7 +131,8 @@ def _make_database(path: str | Path) -> sqlite3.Connection:
             world_revision INTEGER NOT NULL,
             payload_json TEXT NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('QUEUED','SENT','REPORTED')),
-            reply_message_id TEXT UNIQUE
+            reply_message_id TEXT UNIQUE,
+            outbound_envelope_json TEXT
         )""")
         # Additive migration: earlier local databases have this table but lack
         # a separately persisted control state. Do not rewrite the assignment
@@ -112,12 +142,19 @@ def _make_database(path: str | Path) -> sqlite3.Connection:
             conn.execute("""ALTER TABLE director_strategy_assignments ADD COLUMN
                 control_state TEXT NOT NULL DEFAULT 'ACTIVE'
                 CHECK(control_state IN ('ACTIVE','CANCEL_REQUESTED','CANCEL_ACK_CLAIMED'))""")
+        if "outbound_envelope_json" not in columns:
+            conn.execute("ALTER TABLE director_strategy_assignments ADD COLUMN outbound_envelope_json TEXT")
         conn.execute("""CREATE TABLE IF NOT EXISTS director_strategy_cancellations (
             assignment_message_id TEXT PRIMARY KEY REFERENCES director_strategy_assignments(message_id),
             cancellation_message_id TEXT NOT NULL UNIQUE,
             reason TEXT NOT NULL,
-            state TEXT NOT NULL CHECK(state IN ('QUEUED','SENT','ACK_CLAIMED'))
+            state TEXT NOT NULL CHECK(state IN ('QUEUED','SENT','ACK_CLAIMED')),
+            outbound_envelope_json TEXT
         )""")
+        cancellation_columns = {row[1] for row in conn.execute(
+            "PRAGMA table_info(director_strategy_cancellations)")}
+        if "outbound_envelope_json" not in cancellation_columns:
+            conn.execute("ALTER TABLE director_strategy_cancellations ADD COLUMN outbound_envelope_json TEXT")
         conn.execute("""CREATE TABLE IF NOT EXISTS director_strategy_reports (
             message_id TEXT PRIMARY KEY,
             request_id TEXT,
@@ -139,7 +176,26 @@ def _make_database(path: str | Path) -> sqlite3.Connection:
         )""")
         conn.execute("""CREATE TABLE IF NOT EXISTS director_strategy_auth_policy (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-            mode TEXT NOT NULL CHECK(mode IN ('LOCAL_HMAC','LOCAL_UNAUTHENTICATED'))
+            mode TEXT NOT NULL CHECK(mode IN ('LOCAL_HMAC','LOCAL_UNAUTHENTICATED',
+                                              'LOCAL_HMAC_BIDIRECTIONAL'))
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS director_authenticated_admissions (
+            sender_id TEXT NOT NULL,
+            signed_message_id TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            wrapper_message_id TEXT NOT NULL UNIQUE,
+            envelope_sha256 TEXT NOT NULL,
+            admitted_at INTEGER NOT NULL,
+            PRIMARY KEY(sender_id,signed_message_id),
+            UNIQUE(sender_id,nonce)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS director_recovery_quarantine (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            locked INTEGER NOT NULL CHECK(locked=1),
+            schema_version TEXT NOT NULL,
+            source_goal_id TEXT NOT NULL,
+            source_digest TEXT NOT NULL,
+            source_auth_mode TEXT NOT NULL
         )""")
     except BaseException:
         conn.close()
@@ -160,11 +216,14 @@ class DirectorCoordinator:
     def __init__(
         self, path: str | Path, mailbox: DirectorMailbox,
         *, auth_channel: AuthenticatedChannel | None = None,
+        sign_outbound: bool = False,
     ):
         if not isinstance(mailbox, DirectorMailbox):
             raise TypeError("mailbox must be an open DirectorMailbox instance")
         if auth_channel is not None and not isinstance(auth_channel, AuthenticatedChannel):
             raise TypeError("auth_channel must be an AuthenticatedChannel instance")
+        if type(sign_outbound) is not bool or (sign_outbound and auth_channel is None):
+            raise ValueError("signed outbound requires an explicit authenticated channel")
         if not isinstance(path, (str, Path)) or str(path) in ("", ":memory:"):
             raise ValueError("a durable coordinator SQLite file path is required")
         # Two independent databases are required. Their SQLite write
@@ -178,13 +237,16 @@ class DirectorCoordinator:
         # In authenticated mode unsigned local mailbox claims are rejected;
         # a verified HMAC never grants independent action/effect authority.
         self.auth_channel = auth_channel
+        self.sign_outbound = sign_outbound
         self._conn: sqlite3.Connection | None = _make_database(path)
         # Prevent an inadvertent insecure reopen of a previously authenticated
         # coordinator (or retroactive 'upgrade' of already untrusted reports).
+        self._initializing = True
         try:
             with self._transaction() as conn:
                 existing = conn.execute("SELECT mode FROM director_strategy_auth_policy WHERE singleton=1").fetchone()
-                requested = "LOCAL_HMAC" if auth_channel is not None else "LOCAL_UNAUTHENTICATED"
+                requested = ("LOCAL_HMAC_BIDIRECTIONAL" if sign_outbound else
+                             "LOCAL_HMAC" if auth_channel is not None else "LOCAL_UNAUTHENTICATED")
                 if existing is None:
                     # A pre-v0.4 SQLite file may contain legacy unverified
                     # history, despite having no policy row. It must not be
@@ -194,7 +256,7 @@ class DirectorCoordinator:
                         (SELECT COUNT(*) FROM director_strategy_reports) +
                         (SELECT COUNT(*) FROM director_strategy_cancellations)
                     """).fetchone()[0] > 0
-                    if has_legacy and requested == "LOCAL_HMAC":
+                    if has_legacy and requested != "LOCAL_UNAUTHENTICATED":
                         raise ValueError("legacy unauthenticated history cannot be upgraded; use a new database")
                     conn.execute("INSERT INTO director_strategy_auth_policy(singleton,mode) VALUES(1,?)",
                                  (requested,))
@@ -203,6 +265,8 @@ class DirectorCoordinator:
         except BaseException:
             self.close()
             raise
+        finally:
+            self._initializing = False
 
     def close(self) -> None:
         connection, self._conn = self._conn, None
@@ -221,9 +285,20 @@ class DirectorCoordinator:
             raise RuntimeError("DirectorCoordinator is closed")
         return self._conn
 
+    def _authentication_mode(self) -> str:
+        return ("ENFORCED_LOCAL_HMAC_BIDIRECTIONAL" if self.sign_outbound else
+                "ENFORCED_LOCAL_HMAC" if self.auth_channel is not None else
+                "UNAUTHENTICATED_LOCAL")
+
+    @staticmethod
+    def _director_route_sender(worker_id: str) -> str:
+        return _id("director." + _id(worker_id, "worker_id"), "signed director route")
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         connection = self._connection()
+        if not getattr(self, "_initializing", False) and self._recovery_quarantine(connection) is not None:
+            raise RuntimeError("coordinator is recovery-quarantined and cannot mutate state")
         connection.execute("BEGIN IMMEDIATE")
         try:
             yield connection
@@ -231,6 +306,20 @@ class DirectorCoordinator:
         except BaseException:
             connection.execute("ROLLBACK")
             raise
+
+    @staticmethod
+    def _recovery_quarantine(conn: sqlite3.Connection) -> dict[str, object] | None:
+        """A copied coordinator is permanently inert pending external reconciliation.
+
+        There is deliberately no unquarantine API or historical-worker replay.
+        This check runs before public mutations, dispatch and report ingestion.
+        """
+        row = conn.execute("SELECT * FROM director_recovery_quarantine WHERE singleton=1").fetchone()
+        if row is None:
+            return None
+        if row["locked"] != 1 or row["schema_version"] != "director.recovery-quarantine.v1":
+            raise ValueError("invalid recovery quarantine lock state")
+        return dict(row)
 
     def configure(
         self,
@@ -250,6 +339,12 @@ class DirectorCoordinator:
             raise ValueError("goal and capabilities must be declared mappings and sequence")
         if not 1 <= len(capabilities) <= 32 or any(not isinstance(cap, Mapping) for cap in capabilities):
             raise ValueError("capability catalog must contain 1..32 mappings")
+        if self.sign_outbound:
+            assert self.auth_channel is not None
+            for capability in capabilities:
+                route = self._director_route_sender(capability.get("agent_id"))
+                if not self.auth_channel.has_sender_key(route):
+                    raise ValueError("missing independently configured Director-to-worker route key: " + route)
         _id(goal.get("goal_id"), "goal_id")
         # Validate input by exercising the generator with an empty reference
         # world, but do not emit or assume a generated mission here.
@@ -492,7 +587,8 @@ class DirectorCoordinator:
                 self._queue_cancel_intent(conn, row["message_id"], "OPERATOR_STOP")
         # A stop also attempts cooperative revocation of already sent local
         # assignments. Neither delivery nor ACK proves the worker has halted.
-        self._flush_cancellations()
+        if not self.sign_outbound:
+            self._flush_cancellations()
 
     @staticmethod
     def _queue_cancel_intent(conn: sqlite3.Connection, message_id: str, reason: str) -> dict[str, object]:
@@ -531,7 +627,8 @@ class DirectorCoordinator:
             raise ValueError("reason must be bounded and contain no control characters")
         with self._transaction() as conn:
             receipt = self._queue_cancel_intent(conn, message_id, reason)
-        self._flush_cancellations()
+        if not self.sign_outbound:
+            self._flush_cancellations()
         with self._transaction() as conn:
             row = conn.execute("""SELECT state FROM director_strategy_cancellations
                 WHERE assignment_message_id=?""", (message_id,)).fetchone()
@@ -569,25 +666,105 @@ class DirectorCoordinator:
                 if node_id in blocked:
                     self._queue_cancel_intent(conn, row["message_id"], "GRAPH_PREREQUISITE_OR_RESOURCE_UNAVAILABLE")
 
-    def _flush_cancellations(self) -> list[str]:
+    def _prepare_signed_outgoing(self, *, auth_now_utc: int | None) -> None:
+        """Commit immutable HMAC bytes before any independent mailbox write.
+
+        The mailbox and coordinator use separate WAL databases. Signing and
+        sending inside one coordinator transaction would lose the nonce on a
+        crash after mailbox delivery, making retries conflict. The two phases
+        below make a retry publish exactly the original signed bytes.
+        """
+        if not self.sign_outbound:
+            return
+        assert self.auth_channel is not None
+        if type(auth_now_utc) is not int or not 0 <= auth_now_utc < 4102444800:
+            raise ValueError("signed dispatch requires a bounded explicit UTC second")
+        expiry = min(auth_now_utc + 86400, 4102444800)
+        with self._transaction() as conn:
+            for row in conn.execute("""SELECT message_id,recipient_id,payload_json
+                FROM director_strategy_assignments
+                WHERE state='QUEUED' AND control_state='ACTIVE'
+                  AND outbound_envelope_json IS NULL
+                  AND (SELECT paused FROM director_strategy_control WHERE singleton=1)=0
+                  AND (SELECT stop_requested FROM director_strategy_control WHERE singleton=1)=0
+                ORDER BY rowid""").fetchall():
+                payload = json.loads(row["payload_json"])
+                raw = self.auth_channel.seal(
+                    sender_id=self._director_route_sender(row["recipient_id"]),
+                    recipient_id=row["recipient_id"], kind="MISSION_ASSIGNMENT",
+                    payload={"assignment_message_id": row["message_id"], "body": payload},
+                    message_id=row["message_id"], issued_at=auth_now_utc,
+                    expires_at=expiry)
+                if len(raw) > 16384:
+                    raise ValueError("signed outgoing assignment exceeds mailbox envelope bound")
+                conn.execute("""UPDATE director_strategy_assignments SET outbound_envelope_json=?
+                    WHERE message_id=? AND outbound_envelope_json IS NULL""",
+                    (raw.decode("ascii"), row["message_id"]))
+            for row in conn.execute("""SELECT c.assignment_message_id,c.cancellation_message_id,
+                c.reason,a.recipient_id
+                FROM director_strategy_cancellations c
+                JOIN director_strategy_assignments a ON a.message_id=c.assignment_message_id
+                WHERE c.state='QUEUED' AND c.outbound_envelope_json IS NULL
+                ORDER BY c.rowid""").fetchall():
+                body = {"assignment_message_id": row["assignment_message_id"],
+                        "reason": row["reason"], "effect_authority": "NOT_GRANTED",
+                        "worker_stopped_verified": False}
+                raw = self.auth_channel.seal(
+                    sender_id=self._director_route_sender(row["recipient_id"]),
+                    recipient_id=row["recipient_id"], kind="MISSION_CANCEL",
+                    payload={"cancellation_message_id": row["cancellation_message_id"],
+                             "body": body},
+                    message_id=row["cancellation_message_id"], issued_at=auth_now_utc,
+                    expires_at=expiry)
+                if len(raw) > 16384:
+                    raise ValueError("signed cancellation exceeds mailbox envelope bound")
+                conn.execute("""UPDATE director_strategy_cancellations SET outbound_envelope_json=?
+                    WHERE assignment_message_id=? AND outbound_envelope_json IS NULL""",
+                    (raw.decode("ascii"), row["assignment_message_id"]))
+
+    def _outgoing(self, *, row: sqlite3.Row, kind: str,
+                  body: dict[str, object], message_id: str,
+                  auth_now_utc: int | None) -> tuple[str, dict[str, object]]:
+        if not self.sign_outbound:
+            return kind, body
+        assert self.auth_channel is not None
+        encoded = row["outbound_envelope_json"]
+        if type(encoded) is not str:
+            raise RuntimeError("signed outgoing intent must be durable before delivery")
+        inspected = self.auth_channel.inspect_signature(
+            encoded.encode("ascii"), expected_recipient=row["recipient_id"],
+            now_utc=auth_now_utc)
+        if (inspected["authenticated_sender_id"] != self._director_route_sender(row["recipient_id"])
+                or inspected["kind"] != kind or inspected["message_id"] != message_id):
+            raise ValueError("persisted signed outgoing intent failed route/identity validation")
+        return "SIGNED_ENVELOPE", {"envelope": encoded}
+
+    def _flush_cancellations(self, *, auth_now_utc: int | None = None) -> list[str]:
         """Send crash-recoverable revocations, even during a global pause."""
+        if self._recovery_quarantine(self._connection()) is not None:
+            return []
+        self._prepare_signed_outgoing(auth_now_utc=auth_now_utc)
         sent: list[str] = []
         with self._transaction() as conn:
             rows = conn.execute("""SELECT c.assignment_message_id,
-                c.cancellation_message_id,c.reason,a.recipient_id,a.payload_json
+                c.cancellation_message_id,c.reason,a.recipient_id,a.payload_json,
+                c.outbound_envelope_json
                 FROM director_strategy_cancellations c
                 JOIN director_strategy_assignments a ON a.message_id=c.assignment_message_id
                 WHERE c.state='QUEUED' ORDER BY c.rowid""").fetchall()
             for row in rows:
                 payload = json.loads(row["payload_json"])
+                kind, body = self._outgoing(
+                    row=row, kind="MISSION_CANCEL", message_id=row["cancellation_message_id"],
+                    body={"assignment_message_id": row["assignment_message_id"],
+                          "reason": row["reason"],
+                          "effect_authority": "NOT_GRANTED",
+                          "worker_stopped_verified": False}, auth_now_utc=auth_now_utc)
                 self.mailbox.send(
                     sender_id="director", recipient_id=row["recipient_id"],
-                    kind="MISSION_CANCEL", message_id=row["cancellation_message_id"],
+                    kind=kind, message_id=row["cancellation_message_id"],
                     correlation_id=_id(payload["goal_id"], "goal_id"),
-                    payload={"assignment_message_id": row["assignment_message_id"],
-                             "reason": row["reason"],
-                             "effect_authority": "NOT_GRANTED",
-                             "worker_stopped_verified": False},
+                    payload=body,
                 )
                 conn.execute("""UPDATE director_strategy_cancellations SET state='SENT'
                     WHERE assignment_message_id=? AND state='QUEUED'""",
@@ -685,15 +862,19 @@ class DirectorCoordinator:
         identity = _json(candidate, limit=_MAX_EVENT_BYTES)
         return "mission." + hashlib.sha256(identity.encode("ascii")).hexdigest()[:40]
 
-    def _flush_outbox(self) -> list[str]:
+    def _flush_outbox(self, *, auth_now_utc: int | None = None) -> list[str]:
         """Idempotently publish precommitted intents; do not dispatch while paused."""
+        if self._recovery_quarantine(self._connection()) is not None:
+            return []
+        self._prepare_signed_outgoing(auth_now_utc=auth_now_utc)
         sent: list[str] = []
         # Keep the coordinator's transaction open across the short local
         # mailbox send so a concurrent pause cannot slip between the policy
         # check and dispatch. Cross-DB commit atomicity is still unavailable:
         # idempotent message IDs make a retry safe after partial success.
         with self._transaction() as conn:
-            rows = list(conn.execute("""SELECT message_id, recipient_id, payload_json
+            rows = list(conn.execute("""SELECT message_id, recipient_id, payload_json,
+                outbound_envelope_json
                 FROM director_strategy_assignments
                 WHERE state='QUEUED' AND control_state='ACTIVE' ORDER BY rowid"""))
             for row in rows:
@@ -703,9 +884,12 @@ class DirectorCoordinator:
                 if self._stop(conn, self._config(conn), self._world(conn)).status == "OBJECTIVE_MET":
                     break
                 payload = json.loads(row["payload_json"])
+                kind, body = self._outgoing(
+                    row=row, kind="MISSION_ASSIGNMENT", message_id=row["message_id"],
+                    body=payload, auth_now_utc=auth_now_utc)
                 self.mailbox.send(
                     sender_id="director", recipient_id=row["recipient_id"],
-                    kind="MISSION_ASSIGNMENT", payload=payload,
+                    kind=kind, payload=body,
                     message_id=row["message_id"],
                     correlation_id=_id(payload["goal_id"], "goal_id"),
                 )
@@ -731,16 +915,25 @@ class DirectorCoordinator:
             body = msg["payload"]
             authenticated = False
             rejection = None
+            verified = None
+            signed_raw = None
             if self.auth_channel is not None:
                 rejection = "REJECTED_UNSIGNED_OR_INVALID_ENVELOPE"
                 if kind == "SIGNED_ENVELOPE" and isinstance(body, dict):
                     raw = body.get("envelope")
                     if set(body) == {"envelope"} and type(raw) is str and len(raw) <= 16384:
                         try:
-                            verified = self.auth_channel.verify(
-                                raw.encode("ascii"), expected_recipient="director",
-                                now_utc=auth_now_utc,
-                            )
+                            signed_raw = raw.encode("ascii")
+                            if self.sign_outbound:
+                                # The replay marker is inserted below in the
+                                # SAME coordinator transaction as the report.
+                                verified = self.auth_channel.inspect_signature(
+                                    signed_raw, expected_recipient="director", now_utc=auth_now_utc)
+                            else:
+                                # Historical v0.4 mode retains its original
+                                # separate-ledger at-most-once behavior.
+                                verified = self.auth_channel.verify(
+                                    signed_raw, expected_recipient="director", now_utc=auth_now_utc)
                             signed = verified["payload"]
                             if (verified["kind"] not in ("MISSION_REPORT", "MISSION_CANCEL_ACK")
                                     or not isinstance(signed, dict)
@@ -776,6 +969,26 @@ class DirectorCoordinator:
                     count = conn.execute("SELECT COUNT(*) FROM director_strategy_reports").fetchone()[0]
                     if count >= _MAX_REPORTS:
                         raise ValueError("report ledger is full")
+                    if self.sign_outbound and authenticated and rejection is None:
+                        assert verified is not None and signed_raw is not None
+                        try:
+                            conn.execute("""INSERT INTO director_authenticated_admissions (
+                                sender_id,signed_message_id,nonce,wrapper_message_id,
+                                envelope_sha256,admitted_at)
+                                VALUES(?,?,?,?,?,?)""", (
+                                verified["authenticated_sender_id"], verified["message_id"],
+                                verified["nonce"], msg_id,
+                                hashlib.sha256(signed_raw).hexdigest(), auth_now_utc,
+                            ))
+                        except sqlite3.IntegrityError:
+                            # A valid signature is still a replay if the same
+                            # nonce or signed ID was already admitted under a
+                            # different mailbox wrapper. Never update a task.
+                            rejection = "REJECTED_REPLAY_OR_NONCE"
+                            authenticated = False
+                            request_id = None
+                            kind = "SIGNED_ENVELOPE_REJECTED"
+                            encoded = _json({"reason": rejection}, limit=_MAX_EVENT_BYTES)
                     assigned = None
                     if isinstance(request_id, str):
                         assigned = conn.execute("""SELECT recipient_id, state FROM director_strategy_assignments
@@ -839,12 +1052,26 @@ class DirectorCoordinator:
         analytical mission to be generated, within a strict global bound.
         """
         self._config(self._connection())
+        quarantine = self._recovery_quarantine(self._connection())
+        if quarantine is not None:
+            config = self._config(self._connection())
+            world = self._world(self._connection())
+            issued = self._connection().execute(
+                "SELECT COUNT(*) FROM director_strategy_assignments").fetchone()[0]
+            return {"goal_id": config["goal"]["goal_id"], "status": "QUARANTINED",
+                    "reason": "PAUSED_RECOVERY_COPY_REQUIRES_MANUAL_RECONCILIATION",
+                    "world_revision": world.snapshot()["revision"], "missions_issued": issued,
+                    "mission_message_ids": [], "new_missions": [], "cancellation_message_ids": [],
+                    "inbound_reports": [], "worker_stopped_verified": False,
+                    "effect_status": "NOT_EXECUTED", "sender_authenticated": False,
+                    "recovery_quarantine": quarantine,
+                    "authentication_mode": self._authentication_mode()}
         if self.auth_channel is not None and (type(auth_now_utc) is not int or not 0 <= auth_now_utc <= 4102444800):
             raise ValueError("authenticated mode requires a bounded explicit UTC POSIX second")
         self._enqueue_superseded()
         self._enqueue_graph_blocked()
-        cancellations_sent = self._flush_cancellations()
-        sent = self._flush_outbox()
+        cancellations_sent = self._flush_cancellations(auth_now_utc=auth_now_utc)
+        sent = self._flush_outbox(auth_now_utc=auth_now_utc)
         replies = self._accept_reports(auth_now_utc=auth_now_utc)
         queued = []
         with self._transaction() as conn:
@@ -888,7 +1115,7 @@ class DirectorCoordinator:
                         queued.append(msg_id)
                         break
         if queued:
-            sent.extend(self._flush_outbox())
+            sent.extend(self._flush_outbox(auth_now_utc=auth_now_utc))
         with self._transaction() as conn:
             config = self._config(conn)
             world = self._world(conn)
@@ -900,7 +1127,7 @@ class DirectorCoordinator:
                 "new_missions": queued, "cancellation_message_ids": cancellations_sent,
                 "inbound_reports": replies, "worker_stopped_verified": False,
                 "effect_status": "NOT_EXECUTED",
-                "authentication_mode": "ENFORCED_LOCAL_HMAC" if self.auth_channel is not None else "UNAUTHENTICATED_LOCAL",
+                "authentication_mode": self._authentication_mode(),
                 "sender_authenticated": False}
 
     def inspect(self) -> dict[str, object]:
@@ -925,10 +1152,14 @@ class DirectorCoordinator:
             "ready": sorted(self._graph_ready_ids(conn)),
         }
         status, reason = self._display_status(conn, config, world)
+        quarantine = self._recovery_quarantine(conn)
+        if quarantine is not None:
+            status, reason = "QUARANTINED", "PAUSED_RECOVERY_COPY_REQUIRES_MANUAL_RECONCILIATION"
         return {"goal": config["goal"], "world": world.snapshot(),
                 "assignments": assignments, "reports": reports, "cancellations": cancellations,
                 "graph": graph_state,
                 "operator_control": self._operator_control(conn),
                 "status": status, "reason": reason,
                 "effect_status": "NOT_EXECUTED", "worker_stopped_verified": False,
-                "authentication_mode": "ENFORCED_LOCAL_HMAC" if self.auth_channel is not None else "UNAUTHENTICATED_LOCAL"}
+                "authentication_mode": self._authentication_mode(),
+                "recovery_quarantine": quarantine}

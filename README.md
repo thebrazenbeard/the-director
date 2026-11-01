@@ -18,9 +18,9 @@ The absence of a demonstrated technology for transferring subjective consciousne
 2. **World state:** Bounded observations, hypotheses, and contradictions retain their declared origin and uncertainty.
 3. **Strategy:** Local software generates and ranks candidate missions for registered analytical capabilities, labeling predictions as simulations.
 4. **Coordination and dependency planning:** The coordinator honors a configured mission DAG, shared resource reservations, deadlines, and cooperative cancellation. A durable local mailbox carries assignments and replies; reports are not evidence of completion.
-5. **Reasoning and dialogue:** A bounded, no-cost local symbolic reasoner can discuss declared evidence and alternatives across a durable, interactive terminal conversation.
+5. **Reasoning and dialogue:** A bounded, no-cost local symbolic reasoner can discuss declared evidence, competing hypotheses, falsifying observations and graph-ready alternatives across a durable terminal conversation.
 6. **Continuation:** Consented software-agent data can be exported, restored and explicitly started in a separate fixed-protocol local process. This is a data-only instance, not a transfer of subjective experience or a general-purpose sandbox.
-7. **Control and recovery:** Opt-in HMAC checks authenticate worker-report ingress when configured, and consent-bound local checkpoints preserve recoverable records. Operator review, independent outcome confirmation, and separate host authority still apply.
+7. **Control and recovery:** An explicit local mode adds signed instructions and worker-side verification, while a coordinator-owned replay ledger atomically admits signed reports. Paused full-fidelity recovery copies remain permanently quarantined; operator review and separate host authority still apply.
 
 Governing distinctions:
 
@@ -42,12 +42,14 @@ This repository was initialized from the exact Git history of [God Brain](https:
 | [Director world state](runtime/director/world_state.py) | Versioned typed evidence, provenance claims, conflict preservation, restartable snapshots | Independent verification of evidence sources or a sensor connected to reality |
 | [Director strategy generator](runtime/director/strategy.py) | Deterministic generation of bounded analytical missions from a high-level goal, a capability catalog, and observations | Future knowledge, causal optimization, a pretrained AI, or worker execution |
 | [Director mission graph](runtime/director/mission_graph.py) | DAG dependencies and shared resource capacities, wired into coordinator dispatch and cooperative deadline/outage cancellation | Actual worker execution, proof of worker cessation, automatic scheduling daemon |
-| [Director coordinator](runtime/director/coordinator.py) | Explicit local `tick()` with graph-aware mission dispatch, report ingress and separately reviewed completion evidence across restart | Self-running AGI, an external effect runner, or automatic achievement |
-| [Director messenger](runtime/director/messenger.py) | Persistent local recipient-specific SQLite messages, acknowledgement, correlation and replies | Authentication, secure cross-host transport, or a worker actually performing a task |
-| [Local reasoning engine](runtime/director/reasoning.py) | Grounded symbolic answers, bounded comparisons, rival hypotheses and counterfactual projections from declared data | A pretrained model, unrestricted natural-language understanding, or externally verified truth |
-| [Durable dialogue and CLI](runtime/director/dialogue.py) | Persistent multi-turn conversations with pause/resume and a real foreground terminal chat interface | A background assistant, voice interface, general-purpose LLM, or network conversation |
-| [Authenticated reply channel](runtime/director/auth_channel.py) | Optional HMAC-verified local worker report/cancel-ack ingress with key rotation, expiry and persistent replay rejection | Signed outbound Director commands, encrypted contents, human identity, safe remote transport or exactly-once delivery |
-| [Recovery store](runtime/director/recovery.py) | Consented, hashed, bounded local checkpoint/restore of coordinator snapshots and optional inert agent state | Live failover, hostile-tamper proof, unattended restart or execution authorization |
+| [Director coordinator](runtime/director/coordinator.py) | Graph-aware `tick()`, reviewed completion, signed-message persistence and optional atomic signed-report admission in its own SQLite ledger | Self-running AGI, a trusted broker, external effect runner, or automatic achievement |
+| [Director messenger](runtime/director/messenger.py) | Durable same-host recipient-specific SQLite messages and replies, with owner-only local-file checks on POSIX | Secure cross-host transport, principal-isolated ACK rights, or actual worker execution |
+| [Local reasoning engine](runtime/director/reasoning.py) | Grounded symbolic alternatives, counterfactuals, rival hypotheses and deterministically ranked discriminating observations | A pretrained model, unrestricted natural-language understanding, or externally verified truth |
+| [Durable dialogue and CLI](runtime/director/dialogue.py) | Multi-turn terminal chat, explicit changed-context resume provenance, optional bounded hypotheses JSON, read-only coordinator context | A background assistant, voice interface, general-purpose LLM, or network conversation |
+| [Authenticated channel](runtime/director/auth_channel.py) | HMAC envelopes, expiration, revocation, worker report authentication and non-consuming signature inspection | Encryption, asymmetric Director identity, safe remote transport or guaranteed worker processing |
+| [Verified worker inbox](runtime/director/secure_worker.py) | Opt-in per-worker-route verification of signed mission assignments/cancels with bound IDs and no auto-ACK | Exclusive Director origin against a holder of the shared key, execution authority or mailbox availability |
+| [Recovery store](runtime/director/recovery.py) | Consented, hashed, bounded archive of coordinator **diagnostic snapshots** and optional inert agent data | Full-fidelity coordinator rehydration, live failover or hostile-tamper proof |
+| [Quarantined recovery copy](runtime/director/recovery_copy.py) | Full-fidelity SQLite backup of a paused coordinator into a new, permanently inert inspection copy, with explicit approval | Restoring the mailbox or keys, automatic resumed execution, or cross-database failover |
 | [Director stop policy](runtime/director/stop_policy.py) | Operator pause, bounded attempts, unresolved or exhausted states, and guarded success claims | Independently proven success or host authority |
 | [Software-agent state capsules](runtime/director/agent_state.py) | Explicitly scoped, integrity-checked local data export/restore into new state records with durable replay protection | Human consciousness transfer, process startup, author authentication, or subjective identity continuity |
 | [Isolated agent-data runtime](runtime/director/agent_runtime.py) | Separate, consent-started Python child with fixed `STATUS`/`OBSERVE`/`THINK`/`STOP` operations and inert permitted memories | An OS-grade adversarial sandbox, arbitrary uploaded programs, human consciousness transfer or external actions |
@@ -63,7 +65,7 @@ This repository was initialized from the exact Git history of [God Brain](https:
 
 The inherited [CURRENT.md](CURRENT.md), [WARDEN.md](WARDEN.md), [repository map](docs/REPOSITORY_MAP.md), historical qualification records, and HC/God Brain names describe their **original lineage**. Their former roles or permissions are **not** Director governance, identity, or deployment evidence. The history is preserved intentionally; selective adaptation will follow review.
 
-**Current claim ceiling:** A bounded, opt-in **same-host coordination and symbolic-conversation prototype**. Its coordinator filters candidate missions through a dependency/resource graph; a local terminal interface persists discussions; a deliberately started child process can use copied software-agent memory as inert data. Incoming worker reports can be HMAC-authenticated with operator-held keys, while their *findings* remain unverified. Recovery restores **records**, not a running service. There is no independently authenticated human authority, self-running general AI, qualified cross-device operation, subjective continuity, or protected-effect deployment.
+**Current claim ceiling:** A bounded, opt-in **same-host coordination and symbolic-conversation prototype**. The coordinator dispatches dependency/resource-aware analytical missions; the local terminal retains conversations and can rank observations that might distinguish competing hypotheses. A manually started child process can use copied software-agent memory as inert data. A **fresh, explicitly configured** signing mode uses per-worker HMAC routes and coordinator-atomic signed-report admission; the older v0.4 incoming-only mode remains available with its documented crash window. A paused full-fidelity coordinator copy can be inspected but **cannot be unlocked or dispatched**. There is no independently authenticated human authority, self-running general AI, secure shared mailbox for untrusted same-UID workers, qualified cross-device operation, subjective continuity, or protected-effect deployment.
 
 ## How it works today
 
@@ -76,6 +78,16 @@ python3 -m examples.director_local_cycle
 ~~~
 
 The example creates temporary local databases, demonstrates a generated assignment to a **simulated** worker, an acknowledgement and reply, and separate operator confirmation of a sample metric. It closes and removes its test databases. It is a protocol demonstration, not a live AI or a claim that the assignment changed anything outside the program.
+
+Run the new v0.5 complete **signed local cycle** (ephemeral demonstration keys only):
+
+~~~bash
+python3 -B -m examples.director_v05_local_cycle
+~~~
+
+This also demonstrates a falsifying-observation proposal and a paused,
+full-fidelity recovery copy that refuses to dispatch work. The example has
+no network, model-provider, external-effect or paid dependency.
 
 The opt-in `export_agent_state()` / `restore_agent_state()` API separately prepares and restores **selected software state**, with consent, bounded memory, a target domain, a new instance identifier, checksum verification, and persistent anti-replay checks. It returns data; it neither launches the restored software agent nor migrates human consciousness. The [research mapping](docs/director/SCREEN_FUNCTION_TO_SOFTWARE.md) tracks which additional capabilities still need building.
 
@@ -95,7 +107,7 @@ Ask questions, use `/history`, `/pause`, `/resume`, `/quit`, and reopen the same
 python3 -m runtime.director.chat_cli --database ./director_chat.sqlite3 --thread research
 ~~~
 
-To discuss an already configured coordinator's current declared world facts and permitted analytical alternatives, use a separate thread with `--coordinator-db ./director-coordinator.sqlite3`. That link is **read-only**; it neither ticks missions nor changes the coordinator's evidence. The conversation has actual multi-turn state, but the answer generator is deliberately **limited symbolic reasoning**, not a general-purpose language model. Facts are declared locally, not independently measured. The database is plaintext; keep it in a private directory and do not enter secrets. See [the v0.4 operating guide](docs/director/V04_LOCAL_RUNTIME.md) for graph-aware planning, signed reply ingress, opt-in state runtime and record recovery.
+To discuss an already configured coordinator's current declared world facts and permitted analytical alternatives, use a separate thread with `--coordinator-db ./director-coordinator.sqlite3`. That link is **read-only**; it neither ticks missions nor changes evidence. Optionally use `--hypotheses-json ./hypotheses.json` to ask which missing or contested measurement would most clearly distinguish rival explanations. The conversation has actual multi-turn state, but the answer generator is **limited symbolic reasoning**, not a general-purpose language model. Facts are locally declared, not independently measured. Its SQLite database is plaintext; keep it private and do not enter secrets. See the [v0.5 secure-local operating guide](docs/director/V05_SECURE_LOCAL_COORDINATION.md) and [v0.4 foundations](docs/director/V04_LOCAL_RUNTIME.md).
 
 The original v0.1 decision kernel is also available. It accepts fully caller-supplied candidate actions and evaluates them **as advice only**, independently of the newer strategic loop.
 
@@ -189,10 +201,10 @@ Passing those checks validates only the behaviors exercised, not the proposed Di
 
 ## Next qualification priorities
 
-1. **Complete two-way authentication:** Signed outbound requests and verified worker-side reception; independent key custody and authorization before any multi-device design.
-2. **Host-enforced isolation and recovery:** Resource/capability isolation by the OS, independently trusted recovery manifests and an explicit supervised reactivation protocol. Current process separation and data checkpoints are not substitutes.
-3. **Improve grounded reasoning:** Better alternative evaluation, versioned knowledge and optional local inference only if it actually runs under the absolute $0 budget; no fabricated perception or identity claims.
-4. **Production qualification:** Independent red-team tests, operator identity proof, local privacy and integrity controls, and a trustworthy execution boundary before offering real effects or autonomous persistent operation.
+1. **Trusted identity and mailbox custody:** Per-worker HMAC route keys are shared secrets, not public-key Director signatures. Build a privileged local broker or audited asymmetric signature boundary and per-principal ACK authorization before independent workers or multi-device links.
+2. **Complete crash-safe worker delivery:** Incoming coordinator admission is atomic in the new signing mode, but a worker's own HMAC verification and subsequent processing/ACK are not one transaction. Signed cancellation is still a request, not proof of stopping.
+3. **Host-enforced isolation and recovery:** OS-enforced resource/capability isolation, independently trusted recovery manifests, and a supervised reconciliation/reactivation protocol. Quarantined historical assignments have no release API.
+4. **Expand grounded cognition:** Better experiment selection, source provenance and optional genuinely local inference only if it fits the $0 budget, with no fabricated perception or identity claims.
 
 This milestone is **a functioning local research prototype**, not general intelligence, a verified remote service, or a demonstrated consciousness-transfer device. The [research-to-software map](docs/director/SCREEN_FUNCTION_TO_SOFTWARE.md) records both implemented mechanisms and known omissions.
 

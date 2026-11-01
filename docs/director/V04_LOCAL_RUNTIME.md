@@ -1,5 +1,10 @@
 # The Director v0.4 — Local operating contract
 
+**Historical foundation:** This guide documents the v0.4 protocol modes.
+For the newer opt-in signed-outbound / coordinator-atomic-ingress mode and
+full-fidelity quarantined recovery copies, see the
+[v0.5 secure-local operating guide](V05_SECURE_LOCAL_COORDINATION.md).
+
 This release is a **working, bounded, no-cost, same-host reference**, not a
 general intelligence, autonomous network daemon, or certified isolation system.
 It has four separate opt-in components; they do not silently acquire one

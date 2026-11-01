@@ -86,3 +86,22 @@ are narrower than the charter's long-term vision: there is no LLM, no
 OS-certified adversarial sandbox, no live failover, no signed outbound
 Director instructions, and no multi-device communication service. See
 [the v0.4 operating guide](V04_LOCAL_RUNTIME.md) for tested APIs and limitations.
+
+## v0.5 secure-local progression (2026-11-01)
+
+An explicitly selected fresh coordinator mode now signs local analytical
+assignments/cancellations with route-specific HMAC keys and atomically records
+incoming signed-report replay admission with coordinator state. A worker-side
+verifier checks signed commands but never executes or acknowledges them on its
+own. HMAC key possession is **not** exclusive proof of Director identity;
+untrusted workers must not share the writable SQLite mailbox or its ACK
+capability. A full-fidelity, explicitly consented recovery copy of a paused
+coordinator remains **permanently quarantined**, with no dispatch or unlock
+interface. Local reasoning can identify tests that distinguish declared rival
+hypotheses, without claiming their truth. See the
+[v0.5 operating guide](V05_SECURE_LOCAL_COORDINATION.md).
+
+These improvements do not authorize independent host execution, network
+operation, multi-device links, credential use, hidden communication, or a
+continuity claim about subjective consciousness. They remain subject to the
+absolute $0 incremental cost limit and separate human/host authority.

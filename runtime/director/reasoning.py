@@ -13,6 +13,7 @@ This module has no network, process, model-provider, or filesystem interface.
 from __future__ import annotations
 
 import math
+import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -172,6 +173,43 @@ def _parse_alternatives(raw: Sequence[Mapping[str, object]]) -> list[dict[str, o
     return parsed
 
 
+def _parse_hypotheses(raw: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Normalize rival predictions without converting unknowns to evidence."""
+    if not isinstance(raw, (list, tuple)) or len(raw) > 32:
+        raise ValueError("hypotheses must be bounded sequence")
+    parsed: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for candidate in raw:
+        if not isinstance(candidate, Mapping) or set(candidate) != {"hypothesis_id", "predictions"}:
+            raise ValueError("hypothesis fields invalid")
+        ident = _id(candidate["hypothesis_id"], "hypothesis_id")
+        if ident in seen:
+            raise ValueError("duplicate hypothesis_id")
+        seen.add(ident)
+        predictions = candidate["predictions"]
+        if not isinstance(predictions, Mapping) or len(predictions) > 16:
+            raise ValueError("predictions must be bounded mapping")
+        normalized: dict[str, object] = {}
+        for metric, expected in predictions.items():
+            key = _id(metric, "predicted metric")
+            if type(expected) in (int, float):
+                normalized[key] = _number(expected, "predicted value", limit=_MAX_WORLD_ABS)
+            elif type(expected) is bool:
+                normalized[key] = expected
+            elif isinstance(expected, str) and len(expected) <= _MAX_WORLD_TEXT:
+                normalized[key] = expected
+            else:
+                raise ValueError("predicted value must be bounded scalar")
+        parsed.append({"hypothesis_id": ident, "predictions": normalized})
+    return sorted(parsed, key=lambda x: str(x["hypothesis_id"]))
+
+
+def _same_prediction(left: object, right: object) -> bool:
+    # ``True == 1`` is true in Python, but boolean and numeric predictions
+    # represent different evidence types. Numeric int/float are normalized.
+    return type(left) is type(right) and left == right
+
+
 class LocalReasoner:
     """Deterministic conditional reasoning, not a language model or authority."""
 
@@ -264,41 +302,17 @@ class LocalReasoner:
     ) -> list[dict[str, object]]:
         """Compare predictions with *declared* observations; no truth claims."""
         _, facts = _world(world_snapshot)
-        if not isinstance(hypotheses, (list, tuple)) or len(hypotheses) > 32:
-            raise ValueError("hypotheses must be bounded sequence")
-        result = []
-        seen = set()
-        for candidate in hypotheses:
-            if not isinstance(candidate, Mapping) or set(candidate) != {"hypothesis_id", "predictions"}:
-                raise ValueError("hypothesis fields invalid")
-            ident = _id(candidate["hypothesis_id"], "hypothesis_id")
-            if ident in seen:
-                raise ValueError("duplicate hypothesis_id")
-            seen.add(ident)
-            predictions = candidate["predictions"]
-            if not isinstance(predictions, Mapping) or len(predictions) > 16:
-                raise ValueError("predictions must be bounded mapping")
+        result: list[dict[str, object]] = []
+        for candidate in _parse_hypotheses(hypotheses):
+            ident = str(candidate["hypothesis_id"])
             matched: list[str] = []
             contradicted: list[str] = []
             unknown: list[str] = []
-            for metric, expected in predictions.items():
-                key = _id(metric, "predicted metric")
-                if type(expected) in (int, float):
-                    expected_value: object = _number(expected, "predicted value", limit=_MAX_WORLD_ABS)
-                elif type(expected) is bool:
-                    expected_value = expected
-                elif isinstance(expected, str) and len(expected) <= _MAX_WORLD_TEXT:
-                    expected_value = expected
-                else:
-                    raise ValueError("predicted value must be bounded scalar")
+            for key, expected_value in candidate["predictions"].items():
                 observed = facts.get(key)
                 if observed is None or observed["status"] != "OBSERVED":
                     unknown.append(key)
-                elif ((type(observed["value"]) in (int, float)
-                       and type(expected_value) in (int, float)
-                       and observed["value"] == expected_value)
-                      or (type(observed["value"]) is type(expected_value)
-                          and observed["value"] == expected_value)):
+                elif _same_prediction(observed["value"], expected_value):
                     matched.append(key)
                 else:
                     contradicted.append(key)
@@ -310,6 +324,56 @@ class LocalReasoner:
                            "unknown": sorted(unknown), "truth_status": "NOT_ESTABLISHED"})
         result.sort(key=lambda x: (len(x["contradicted"]), -len(x["matched"]), x["hypothesis_id"]))
         return result
+
+    def suggest_discriminating_observations(
+        self, world_snapshot: Mapping[str, object],
+        hypotheses: Sequence[Mapping[str, object]],
+    ) -> dict[str, object]:
+        """Suggest *unperformed* observations separating still-viable rivals.
+
+        The score is a count of rival pairs making distinct predictions for
+        the same currently unknown/contested metric, not a probability, causal
+        forecast, sensor instruction, or authorization to collect information.
+        """
+        revision, facts = _world(world_snapshot)
+        parsed = _parse_hypotheses(hypotheses)
+        reports = self.compare_hypotheses(world_snapshot, hypotheses)
+        excluded = sorted(str(row["hypothesis_id"]) for row in reports if row["contradicted"])
+        viable = [h for h in parsed if h["hypothesis_id"] not in excluded]
+        candidates: dict[str, list[list[str]]] = {}
+        if len(viable) >= 2:
+            for index, left in enumerate(viable):
+                for right in viable[index + 1:]:
+                    for metric in sorted(set(left["predictions"]) & set(right["predictions"])):
+                        current = facts.get(metric)
+                        if current is not None and current["status"] == "OBSERVED":
+                            continue
+                        if not _same_prediction(left["predictions"][metric],
+                                                right["predictions"][metric]):
+                            candidates.setdefault(metric, []).append([
+                                str(left["hypothesis_id"]), str(right["hypothesis_id"]),
+                            ])
+        ranked = sorted(candidates.items(), key=lambda item: (-len(item[1]), item[0]))
+        observations = [{
+            "metric": metric,
+            "priority": ("REVERIFY_CONFLICT" if facts.get(metric, {}).get("status") == "CONTESTED"
+                         else "MEASURE_UNKNOWN"),
+            "distinguished_pair_count": len(pairs),
+            "hypothesis_pairs": pairs[:16],
+            "pairs_truncated": len(pairs) > 16,
+            "evidence_status": "NOT_YET_OBSERVED",
+        } for metric, pairs in ranked[:16]]
+        status = ("NEEDS_RIVAL_HYPOTHESES" if len(viable) < 2
+                  else "PROPOSED_OBSERVATIONS" if observations
+                  else "NO_DISCRIMINATING_OBSERVATION")
+        return {"world_revision": revision, "status": status,
+                "viable_hypothesis_ids": [str(x["hypothesis_id"]) for x in viable],
+                "excluded_hypothesis_ids": excluded,
+                "observations": observations,
+                "ranking_basis": "COUNT_OF_DISTINGUISHED_RIVAL_PAIRS_NOT_PROBABILITY",
+                "probability_status": "NOT_INFERRED", "authorization": "NOT_GRANTED",
+                "effect_status": "NOT_EXECUTED",
+                "uncertainty": "HYPOTHESES_AND_OBSERVATIONS_ARE_DECLARED_UNVERIFIED"}
 
     def respond(self, prompt: str, *, context: Mapping[str, object]) -> dict[str, object]:
         """Produce a multi-turn explanation grounded solely in admitted context.
@@ -367,6 +431,56 @@ class LocalReasoner:
                       f"would produce {_fmt(estimate)} toward the declared target {_fmt(target)}. "
                       "This is arithmetic on a hypothetical, not a verified forecast or effect.")
             return self._answer(answer, "CONDITIONAL_SIMULATION", basis, outcome["uncertainty"])
+
+        rivals = context.get("hypotheses", ())
+        asks_probe = any(word in lower for word in (
+            "distinguish", "discriminat", "test hypoth", "test theor", "which observation",
+            "which measurement", "what to measure", "what should we measure",
+        ))
+        asks_falsifier = "disprov" in lower or "falsif" in lower
+        if asks_probe or asks_falsifier:
+            if not rivals:
+                return self._answer(
+                    "No rival hypotheses were supplied. I need declared competing predictions before I can suggest a discriminating observation.",
+                    "NEEDS_HYPOTHESES", basis, "HYPOTHESES_MISSING")
+            parsed = _parse_hypotheses(rivals)
+            if asks_falsifier:
+                mentioned = [h for h in parsed if re.search(
+                    r"(?<![\w.:-])" + re.escape(str(h["hypothesis_id"]).casefold()) + r"(?![\w.:-])", lower)]
+                if len(mentioned) != 1:
+                    return self._answer(
+                        "Name one declared hypothesis ID to request a conditional falsifier.",
+                        "NEEDS_HYPOTHESIS_ID", basis, "HYPOTHESIS_SELECTION_MISSING")
+                selected = mentioned[0]
+                predictions = sorted(selected["predictions"].items())
+                if not predictions:
+                    return self._answer(
+                        f"Hypothesis {selected['hypothesis_id']} supplies no testable prediction.",
+                        "NO_FALSIFIER_SPECIFIED", basis, "PREDICTIONS_MISSING")
+                metric_id, predicted = predictions[0]
+                rendered = json.dumps(predicted, ensure_ascii=True, allow_nan=False)
+                answer = (f"Hypothesis {selected['hypothesis_id']} declares {metric_id}={rendered}. "
+                          f"An independently checked observation of {metric_id} with a different value "
+                          "would contradict that prediction. That is a conditional falsifier, "
+                          "not proof of another hypothesis or permission to collect data.")
+                return self._answer(answer, "CONDITIONAL_FALSIFIER", basis,
+                                    "PREDICTIONS_AND_EVIDENCE_UNVERIFIED")
+            proposed = self.suggest_discriminating_observations(world, rivals)
+            suggestions = proposed["observations"]
+            if not suggestions:
+                return self._answer(
+                    "There is no presently supported missing observation that distinguishes the still-viable declared hypotheses. "
+                    "More distinct predictions or independently reviewed evidence are needed.",
+                    proposed["status"], basis, proposed["uncertainty"])
+            top = suggestions[0]
+            priority = ("independently rechecking contested" if top["priority"] == "REVERIFY_CONFLICT"
+                        else "observing previously unknown")
+            answer = (f"The next discriminating test would be {priority} metric {top['metric']}. "
+                      f"In the declared rival set it separates {top['distinguished_pair_count']} "
+                      "hypothesis pair(s), a comparison count rather than a probability. "
+                      "It is not proof of any hypothesis, a measured result, or permission to perform the test.")
+            return self._answer(answer, "DISCRIMINATING_OBSERVATION", basis,
+                                proposed["uncertainty"])
 
         if "hypothes" in lower or "theor" in lower:
             h = context.get("hypotheses", ())
