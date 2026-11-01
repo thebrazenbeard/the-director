@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier
@@ -123,7 +124,7 @@ class CustodyTests(TestCase):
 
     def test_content_tampering_detected_and_new_append_blocked(self) -> None:
         self.store.append("ev-1", "evidence", b"first", UTC)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE entries SET content = ? WHERE record_id = ?", (b"altered", "ev-1"))
         with self.assertRaises(CustodyIntegrityError):
             self.store.verify_chain()
@@ -132,7 +133,7 @@ class CustodyTests(TestCase):
 
     def test_metadata_tampering_detected(self) -> None:
         self.store.append("ev-1", "evidence", b"first", UTC)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE entries SET observed_at_utc = ? WHERE record_id = ?", ("2026-11-03T00:00:00Z", "ev-1"))
         with self.assertRaises(CustodyIntegrityError):
             self.store.verify_chain()
@@ -140,7 +141,7 @@ class CustodyTests(TestCase):
     def test_gap_from_deleted_row_detected(self) -> None:
         self.store.append("ev-1", "evidence", b"first", UTC)
         self.store.append("ev-2", "evidence", b"second", UTC)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("DELETE FROM entries WHERE record_id = ?", ("ev-1",))
         with self.assertRaises(CustodyIntegrityError):
             self.store.verify_chain()
@@ -148,7 +149,7 @@ class CustodyTests(TestCase):
     def test_tail_deletion_detected_against_local_counter(self) -> None:
         self.store.append("ev-1", "evidence", b"first", UTC)
         self.store.append("ev-2", "evidence", b"second", UTC)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("DELETE FROM entries WHERE record_id = ?", ("ev-2",))
         with self.assertRaises(CustodyIntegrityError):
             self.store.verify_chain()
