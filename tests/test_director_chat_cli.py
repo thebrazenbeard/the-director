@@ -122,6 +122,69 @@ class DirectorChatCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("Director setup error", content)
 
+    def test_user_selected_hypotheses_suggest_discriminating_observation(self):
+        source = Path(self.temp.name) / "hypotheses.json"
+        hypotheses = [
+            {"hypothesis_id": "red", "predictions": {"signal": "red"}},
+            {"hypothesis_id": "blue", "predictions": {"signal": "blue"}},
+        ]
+        source.write_text(json.dumps(hypotheses), encoding="utf-8")
+        original = source.read_bytes()
+        args = self.args() + ["--hypotheses-json", str(source)]
+        code, content = self.invoke("Which observation would distinguish these hypotheses?\n/quit\n", argv=args)
+        self.assertEqual(code, 0, content)
+        self.assertIn("signal", content)
+        self.assertIn("hypothesis pair(s)", content)
+        self.assertEqual(source.read_bytes(), original)
+        with DirectorDialogue(self.db, LocalReasoner()) as journal:
+            self.assertEqual(journal.history("research")[-1]["status"], "DISCRIMINATING_OBSERVATION")
+
+    def test_invalid_duplicate_or_oversized_hypotheses_fail_before_history_mutation(self):
+        source = Path(self.temp.name) / "invalid-hypotheses.json"
+        source.write_text('[{"hypothesis_id":"a","predictions":{"x":1,"x":2}}]', encoding="utf-8")
+        args = self.args() + ["--hypotheses-json", str(source)]
+        code, content = self.invoke("/quit\n", argv=args)
+        self.assertEqual(code, 2)
+        self.assertIn("Director setup error", content)
+        self.assertFalse(self.db.exists())
+        source.write_text("[" + " " * (70 * 1024) + "]", encoding="utf-8")
+        code, content = self.invoke("/quit\n", argv=args)
+        self.assertEqual(code, 2)
+        self.assertIn("bounded", content)
+        self.assertFalse(self.db.exists())
+
+    def test_resume_policy_shows_fresh_context_reappraisal_and_pinned_refusal(self):
+        goal = {"goal_id": "research", "objective": "Assess evidence locally",
+                "metric": "quality", "target_value": 8, "direction": "INCREASE"}
+
+        class FailingReasoner:
+            def respond(self, prompt, *, context):
+                raise RuntimeError("interrupted")
+
+        with DirectorDialogue(self.db, FailingReasoner()) as journal:
+            journal.configure_thread("research", goal)
+            with self.assertRaises(RuntimeError):
+                state = WorldState()
+                state.ingest({"event_id": "ev.1", "claim_id": "quality", "value": 3,
+                              "evidence_class": "OBSERVATION", "source_ref": "caller",
+                              "lineage_id": "caller_lineage"})
+                journal.ask("research", "What changed?", world_snapshot=state.snapshot())
+        pinned_args = self.args(fresh=False, observation="7") + ["--resume-policy", "PINNED_CONTEXT"]
+        code, content = self.invoke("/resume\n/quit\n", argv=pinned_args)
+        self.assertEqual(code, 0)
+        self.assertIn("pinned context", content)
+        with DirectorDialogue(self.db, LocalReasoner()) as journal:
+            self.assertEqual(len(journal.history("research")), 1)
+        fresh_args = self.args(fresh=False, observation="7")
+        code, content = self.invoke("/resume\n/history\n/quit\n", argv=fresh_args)
+        self.assertEqual(code, 0)
+        self.assertIn("reappraised", content)
+        self.assertIn("world revision", content)
+        with DirectorDialogue(self.db, LocalReasoner()) as journal:
+            turns = journal.history("research")
+            self.assertEqual(len(turns), 2)
+            self.assertNotEqual(turns[0]["context_digest"], turns[1]["context_digest"])
+
     def test_second_goal_definition_cannot_mutate_existing_thread(self):
         self.invoke("/quit\n")
         changed = self.args()

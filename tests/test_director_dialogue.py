@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -117,6 +118,79 @@ class DirectorDialogueTests(unittest.TestCase):
             self.dialogue.ask("main", "Any options?", world_snapshot=world(),
                               alternatives=options * 20)
         self.assertEqual(self.dialogue.history("main"), prior)
+
+    def test_rival_hypotheses_reach_reasoner_as_untrusted_context(self):
+        self.dialogue.reasoner = LocalReasoner()
+        hypotheses = [
+            {"hypothesis_id": "a", "predictions": {"signal": "red"}},
+            {"hypothesis_id": "b", "predictions": {"signal": "blue"}},
+        ]
+        result = self.dialogue.ask("main", "Which observation would distinguish these hypotheses?",
+                                   world_snapshot=world(), hypotheses=hypotheses)
+        self.assertEqual(result["reply"]["status"], "DISCRIMINATING_OBSERVATION")
+        self.assertIn("signal", result["reply"]["content"])
+        self.assertFalse(result["context_changed"])
+        self.assertEqual(result["question"]["context_digest"], result["reply"]["context_digest"])
+        before = list(self.dialogue.history("main"))
+        with self.assertRaisesRegex(ValueError, "duplicate hypothesis_id"):
+            self.dialogue.ask("main", "Should fail before write", world_snapshot=world(),
+                              hypotheses=hypotheses * 2)
+        self.assertEqual(before, self.dialogue.history("main"))
+
+    def test_pinned_crash_recovery_rejects_changed_revision_or_alternatives(self):
+        self.dialogue.reasoner = BrokenOnceReasoner()
+        opts = [{"option_id": "a", "expected_delta": 1}]
+        with self.assertRaisesRegex(RuntimeError, "transient"):
+            self.dialogue.ask("main", "Pending with original context", world_snapshot=world(),
+                              alternatives=opts)
+        original = self.dialogue.history("main")[0]
+        self.assertEqual(original["world_revision"], 1)
+        self.assertEqual(len(original["context_digest"]), 64)
+        with self.assertRaisesRegex(ValueError, "pinned context"):
+            self.dialogue.resume("main", world_snapshot=world(9, 2), alternatives=opts,
+                                 context_policy="PINNED_CONTEXT")
+        with self.assertRaisesRegex(ValueError, "pinned context"):
+            self.dialogue.resume("main", world_snapshot=world(),
+                                 alternatives=[{"option_id": "b", "expected_delta": 2}],
+                                 context_policy="PINNED_CONTEXT")
+        self.assertEqual(len(self.dialogue.history("main")), 1)
+        finished = self.dialogue.resume("main", world_snapshot=world(), alternatives=opts,
+                                        context_policy="PINNED_CONTEXT")
+        self.assertFalse(finished["context_changed"])
+        self.assertEqual(finished["context_policy"], "PINNED_CONTEXT")
+
+    def test_fresh_reappraisal_is_explicit_and_records_different_contexts(self):
+        self.dialogue.reasoner = BrokenOnceReasoner()
+        with self.assertRaises(RuntimeError):
+            self.dialogue.ask("main", "Pending", world_snapshot=world())
+        result = self.dialogue.resume("main", world_snapshot=world(7, 3),
+                                      context_policy="FRESH_REAPPRAISAL")
+        self.assertTrue(result["context_changed"])
+        self.assertEqual(result["question"]["world_revision"], 1)
+        self.assertEqual(result["reply"]["world_revision"], 3)
+        self.assertNotEqual(result["question"]["context_digest"], result["reply"]["context_digest"])
+        self.assertEqual(result["context_policy"], "FRESH_REAPPRAISAL")
+        with self.assertRaises(ValueError):
+            self.dialogue.resume("main", world_snapshot=world(), context_policy="UNBOUNDED")
+
+    def test_existing_v04_dialogue_database_migrates_context_digest_additively(self):
+        historical = Path(self.tmp.name) / "historical.sqlite3"
+        with sqlite3.connect(historical) as conn:
+            conn.execute("""CREATE TABLE director_dialogue_messages (
+                thread_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL,
+                speaker_id TEXT NOT NULL, content TEXT NOT NULL, reply_to_seq INTEGER,
+                status TEXT NOT NULL, basis_json TEXT NOT NULL, uncertainty TEXT NOT NULL,
+                world_revision INTEGER, created_at_utc TEXT NOT NULL,
+                PRIMARY KEY(thread_id,seq), UNIQUE(thread_id,reply_to_seq))""")
+        if os.name == "posix":
+            os.chmod(historical, 0o600)
+        with DirectorDialogue(historical, LocalReasoner()) as restored:
+            restored.configure_thread("legacy", GOAL)
+            result = restored.ask("legacy", "Status?", world_snapshot=world())
+            self.assertEqual(len(result["question"]["context_digest"]), 64)
+            columns = {row[1] for row in restored._connection().execute(
+                "PRAGMA table_info(director_dialogue_messages)")}
+            self.assertIn("context_digest", columns)
 
     def test_restart_preserves_full_conversation_and_immutable_goal(self):
         self.dialogue.ask("main", "Assess", world_snapshot=world())

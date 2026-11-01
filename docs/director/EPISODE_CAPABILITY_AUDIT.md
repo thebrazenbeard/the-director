@@ -56,11 +56,11 @@ The full-file audit was divided by episode to prevent a few famous scenes from m
 ## Consolidated gaps and maturity
 
 **Historical baseline note:** The table below records the gaps at the time
-of this research audit. Subsequent v0.4 code connected DAG mission dispatch,
-added local symbolic conversation, a consent-started data-only agent process,
-incoming worker HMAC verification, and record-only recovery. Their current
-coverage and remaining trust boundaries are documented in the
-[v0.4 local operating guide](V04_LOCAL_RUNTIME.md); this historical
+of this research audit. Subsequent code connected DAG dispatch, local symbolic
+conversation, an explicitly consented data-only agent process, signed local
+messaging and record-only recovery. The current software contracts and limits
+are in the [v0.5 guide](V05_SECURE_LOCAL_COORDINATION.md), with prior
+foundations in the [v0.4 guide](V04_LOCAL_RUNTIME.md); this historical
 research-to-implementation mapping has not been retroactively rewritten.
 
 | Priority | Screen-grounded function | First safe software target | Scope at this audit |
