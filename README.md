@@ -35,6 +35,10 @@ This repository was initialized from the exact Git history of [God Brain](https:
 | Source | Tested capability in its original scope | What it does **not** establish |
 | --- | --- | --- |
 | [Director decision kernel](runtime/director/decision.py) | Offline deterministic policy evaluation of a mission, candidate plans, and declared evidence; explicit admissible/rejected/abstain receipt | Authenticated provenance, human approval, live agent orchestration, or any executed effect |
+| [Director dossiers](runtime/director/dossier.py) | Versioned, private, canonical full-input snapshots with content hashes and deterministic advisory replay | Signed decisions, evidence truth, source/clock authentication, or permission to act |
+| [Director local custody](runtime/director/custody.py) | Opt-in, bounded SQLite storage with local hash-chain consistency checks and restart tests | Immutable evidence against a privileged writer, authenticated source identity, or encrypted records |
+| [Director task ledger](runtime/director/task_store.py) | Opt-in SQLite state for analytical tasks, lease fencing, bounded retries, pause/cancel, and restart recovery | Running workers, hostile-worker authentication, cross-host coordination, or host permission |
+| [Director authority reference](runtime/director/authority.py) | Offline exact-request/grant-shape checks that always deny or require separate host attestation | A valid grant, independently enforced authorization, or any actual effect |
 | [Reference kernel](runtime/reference_kernel/README.md) | Typed evidence/provenance, memory correction, in-process authority/effect checks, journal and restart tests | Externally authenticated permissions, a secure host policy service, or real-world effect authority |
 | [Cognitive core](runtime/cognitive_core/README.md) | Deterministic reference slices for salience, memory, competing world models, counterfactuals, and metacognition | A pretrained general AI, an independent autonomous coordinator, or production-scale planning |
 | [Architecture](docs/architecture/HYPERCONNECTOME_REFERENCE_MODEL.md) | Source-level contracts, invariants, and architectural research | Deployed multi-device operation or Director-specific qualification |
@@ -42,13 +46,23 @@ This repository was initialized from the exact Git history of [God Brain](https:
 
 The inherited [CURRENT.md](CURRENT.md), [WARDEN.md](WARDEN.md), [repository map](docs/REPOSITORY_MAP.md), historical qualification records, and HC/God Brain names describe their **original lineage**. Their former roles or permissions are **not** Director governance, identity, or deployment evidence. The history is preserved intentionally; selective adaptation will follow review.
 
-**Current claim ceiling:** A source-imported research foundation and the first deterministic, recommendation-only Director reference function. There is no qualified autonomous Director service or protected-effect deployment yet.
+**Current claim ceiling:** A source-imported research foundation, deterministic advisory evaluation, complete-input private dossiers, opt-in **same-host** local storage and task coordination, and a deny-only authorization reference. There is no qualified autonomous Director service, live multi-host coordinator, authenticated respondent, or protected-effect deployment.
 
 ## First Director-specific function
 
 `runtime.director.evaluate(mission, proposals, evidence, *, now_utc=utc_datetime)` returns a JSON-serializable recommendation or explicit `ABSTAIN`. It evaluates a human-supplied mission against action/target constraints, expiry, a budget in integer cents, declared evidence references, and bounded proposal estimates. Eligible proposals are ranked deterministically; ineligible proposals include denial reasons.
 
 **This is advice, not an action interface.** The receipt always marks authorization as `NOT_GRANTED`, effects as `NOT_EXECUTED`, and evidence custody as `DECLARED_UNVERIFIED`. The policy only counts declared `OBSERVATION` records with distinct source references and lineages, but cannot authenticate those claims. Evidence origins, mission policy, proposed benefit, and the supplied clock are not independently verified. The receipt is a **summary, not a signed or complete-input-bound audit dossier**; a trusted host would need to preserve and validate its inputs separately. See the [executable examples and adversarial tests](tests/test_director_decision.py); there are no network, shell, or paid-model dependencies.
+
+### Optional local v0.2 foundations
+
+The new [`build_dossier()` and `replay_dossier()`](runtime/director/dossier.py) preserve a bounded private snapshot of **all inputs to that current evaluator** and its advisory result. Changing the objective or a declared source changes the content digest even if the old summary receipt happens to match. `serialize_dossier()` and `parse_dossier()` validate a strict, canonical 256 KiB record; `public_receipt()` is an **explicit opt-in** digest-only export. A hash cannot authenticate its author, prove a source is real, or confer permission.
+
+[`CustodyStore(path)`](runtime/director/custody.py) stores *explicitly admitted* opaque bytes in a caller-selected local SQLite file, with append consistency and restart checks. It is plaintext; a database administrator could rewrite and rehash a consistent history. The conservative default is 256 records of up to 256 KiB each. Repeating a record ID with the same kind and exact bytes returns the original receipt and **first-write timestamp**; conflicting content is rejected.
+
+[`TaskStore(path)`](runtime/director/task_store.py) durably coordinates cooperative analytical tasks with local SQLite leases and fencing; its API does **not** launch tasks or grant effects. An authenticated worker identity, genuine trusted time, and a cross-host protocol are not implemented. The [authority reference](runtime/director/authority.py) compares untrusted request/grant envelopes, including the full dossier digest, but cannot return `GRANTED` or execute anything. A structurally plausible grant still returns `REQUIRES_HOST_ATTESTATION`.
+
+**Privacy and device boundary:** Instantiating either store creates local files. Select an operator-controlled private directory, never ingest secrets by default, and close handles before deleting temporary directories on Windows. Do not share one writable SQLite WAL file between Lappy, VN1, and VN2. There is no automatic startup, broadcasting, remote listener, or effect adapter. The [local-foundations design and source provenance](docs/director/LOCAL_FOUNDATIONS.md) defines the full limits.
 
 ## Run the existing checks
 
@@ -57,6 +71,12 @@ Python 3.12+ and the standard library suffice for the imported reference tests. 
 ~~~bash
 python3 -m unittest discover -s tests -q
 python3 -m unittest -q tests.test_director_decision
+python3 -m unittest -q \
+  tests.test_director_dossier \
+  tests.test_director_custody \
+  tests.test_director_task_store \
+  tests.test_director_authority \
+  tests.test_director_local_foundations
 python3 tools/validate_hc_architecture.py --root .
 python3 -m unittest -q \
   runtime.cognitive_core.test_cognitive_loop \
@@ -80,9 +100,9 @@ Passing those checks validates only the behaviors exercised, not the proposed Di
 
 ## Near-term build direction
 
-1. Harden and qualify the initial offline **recommendation-only** policy, including reproducible input custody, evidence quality, and hostile tests. No external effects.
-2. Build auditable, operator-reviewable decision dossiers with explicit alternative explanations, unresolved risks, and human feedback.
-3. Add bounded multi-agent delegation, audit, revocation, and independent effect reconciliation only after trust-boundary review and human authorization.
+1. Expand the **advisory** dossier schema beyond the current evaluator inputs to include explicit rival explanations, uncertainty, unresolved risks, falsifiers, and operator feedback—without allowing model-written text to become authority.
+2. Qualify custody against trusted-path admission, data retention, privacy, backup/recovery, and any genuinely independent source attestation. Local hashes alone do not solve these.
+3. Design separately authenticated host ownership, revocation, replay defenses, and effect reconciliation before any future multi-host service or external effect. No protected action is authorized or activated by this reference.
 
 The first Director-specific milestone is a **defensible recommendation with a clear reason to abstain**, not an all-powerful fictional replica.
 

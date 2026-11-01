@@ -12,3 +12,9 @@ __pycache__/
 *.sqlite3-*
 *.sqlite
 *.sqlite-*
+# SQLite also commonly uses .db/.db3 suffixes. Keep plaintext local
+# dossiers and write-ahead log sidecars out of ordinary commits.
+*.db
+*.db-*
+*.db3
+*.db3-*
