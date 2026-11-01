@@ -193,4 +193,3 @@ class CustodyTests(TestCase):
             self.store.get("a")
         with self.assertRaises(CustodyClosedError):
             self.store.verify_chain()
-
