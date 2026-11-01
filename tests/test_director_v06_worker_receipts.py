@@ -191,6 +191,32 @@ class DurableWorkerReceiptsTests(unittest.TestCase):
         finally:
             alias.unlink()
 
+    @unittest.skipUnless(os.name == "posix", "POSIX active SQLite sidecar qualification")
+    def test_auth_wal_shm_hardlinks_are_rejected_without_touching_auth_db(self):
+        # Keep the authentication channel open so the WAL and SHM are active.
+        self.assertTrue(self.channel.has_sender_key("director.worker_x"))
+        self.receipts.close()
+        original_auth = self.channel._connection()
+        self.assertEqual(original_auth.execute("PRAGMA quick_check").fetchone()[0], "ok")
+        for suffix in ("-wal", "-shm", "-journal"):
+            source = (Path(str(self.channel.path) + suffix)
+                      if suffix != "-journal" else self.channel.path)
+            self.assertTrue(source.is_file(), f"active auth SQLite file missing: {source}")
+            alias = Path(str(self.path) + suffix)
+            self.assertFalse(alias.exists())
+            os.link(source, alias)
+            try:
+                with self.subTest(sidecar=suffix):
+                    with self.assertRaisesRegex(ValueError, "hardlink"):
+                        DurableWorkerReceipts(self.path, self.inbox)
+                    # A failed open must not have unlinked or repurposed the
+                    # planted alias, and the original auth DB must remain sound.
+                    self.assertTrue(alias.is_file())
+                    self.assertTrue(os.path.samefile(alias, source))
+                    self.assertEqual(original_auth.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            finally:
+                alias.unlink()
+
     def test_injected_database_failure_rolls_back_without_consuming_signature(self):
         command = self.signed()
         with self.receipts._transaction() as conn:

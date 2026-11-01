@@ -346,20 +346,32 @@ class LocalReasoner:
         reports = self.compare_hypotheses(world_snapshot, hypotheses)
         excluded = sorted(str(row["hypothesis_id"]) for row in reports if row["contradicted"])
         viable = [h for h in parsed if h["hypothesis_id"] not in excluded]
-        # An already OBSERVED metric cannot be probed again by this method.
-        # Two viable hypotheses can differ on such a field (e.g. one omits a
-        # correct prediction), yet make the *same* predictions for every metric
-        # still eligible for measurement. Group those effective profiles so
-        # rephrasing or copying settled fields cannot change probe rankings.
+        # A profile counts only where *viable rivals actually disagree* on a
+        # not-yet-observed metric. An extra prediction for a metric that no
+        # other rival predicts cannot discriminate anything. Likewise,
+        # already OBSERVED fields cannot be re-probed. Ignoring both classes
+        # prevents cloned hypotheses with decorative predictions from
+        # multiplying pair counts and changing an otherwise identical rank.
         # Original IDs remain visible, not silently discarded or merged as
         # proof that the underlying causal hypotheses are identical.
+        predictions_by_metric: dict[str, list[object]] = {}
+        for hypothesis in viable:
+            for metric, expected in hypothesis["predictions"].items():
+                if facts.get(metric, {}).get("status") != "OBSERVED":
+                    predictions_by_metric.setdefault(metric, []).append(expected)
+        discriminating_metrics = {
+            metric for metric, predicted in predictions_by_metric.items()
+            if len(predicted) >= 2 and any(
+                not _same_prediction(predicted[0], candidate) for candidate in predicted[1:]
+            )
+        }
         distinct: list[dict[str, object]] = []
         equivalent_groups: list[list[str]] = []
         effective_profiles: list[dict[str, object]] = []
         for hypothesis in viable:
             effective = {
                 metric: expected for metric, expected in hypothesis["predictions"].items()
-                if facts.get(metric, {}).get("status") != "OBSERVED"
+                if metric in discriminating_metrics
             }
             for index, representative in enumerate(effective_profiles):
                 if _same_prediction_profile(effective, representative):

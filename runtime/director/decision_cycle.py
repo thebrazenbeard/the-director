@@ -12,6 +12,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 
+from .mission_graph import MissionGraph
 from .reasoning import LocalReasoner, _parse_hypotheses
 
 
@@ -77,6 +78,21 @@ def assess_decision_cycle(
     if graph_ready is not None and (len(ready_set) != len(graph_ready)
                                     or not ready_set <= set(option["option_id"] for option in options)):
         raise ValueError("graph readiness must reference unique registered capabilities")
+    if (graph_ready is None) != (graph_snapshot is None):
+        raise ValueError("graph readiness and graph snapshot must both be configured or absent")
+    if graph_snapshot is not None:
+        if not isinstance(graph_snapshot, Mapping) or not isinstance(graph_snapshot.get("graph"), Mapping):
+            raise ValueError("graph snapshot must contain a declared mission graph")
+        declaration = graph_snapshot["graph"]
+        validated_graph = MissionGraph(declaration["nodes"], declaration["resource_capacities"])
+        expected_ready = {node["mission_id"] for node in validated_graph.ready(
+            completed=graph_snapshot["completed"], in_progress=graph_snapshot["active"],
+            failed_or_cancelled=graph_snapshot["invalidated"],
+            unavailable_resources=graph_snapshot["unavailable_resources"],
+            now_tick=graph_snapshot["logical_tick"],
+        )}
+        if expected_ready != ready_set:
+            raise ValueError("graph readiness mismatches the declared snapshot")
 
     probes: list[dict[str, object]] = []
     for proposed in hypothesis_assessment["observations"]:

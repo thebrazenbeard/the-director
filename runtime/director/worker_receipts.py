@@ -23,17 +23,42 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import stat
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from .auth_channel import _canonical, _check_existing_file_security, _identifier, _parse
+from .auth_channel import _canonical, _identifier, _parse
 from .secure_worker import VerifiedWorkerInbox
 
 
 _SCHEMA = "director.worker-receipts.v1"
 _MAX_RECEIPTS = 2048
+
+
+def _check_receipt_files(path: Path) -> None:
+    """Reject unsafe main, WAL, SHM *and rollback-journal* aliases pre-open.
+
+    A link to another active SQLite journal can modify that other database's
+    pages when this ledger enters WAL mode. Owner-only mode alone is not
+    enough: hardlinks preserve permissions. This is a static local pathname
+    check, not race-proof defense against another same-UID file writer.
+    """
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        member = Path(str(path) + suffix)
+        if member.is_symlink():
+            raise ValueError("worker receipt database or sidecar cannot be a symlink")
+        try:
+            metadata = member.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("worker receipt database or sidecar must be a regular file")
+        if metadata.st_nlink != 1:
+            raise ValueError("worker receipt database or sidecar must not have hardlink aliases")
+        if os.name == "posix" and metadata.st_mode & 0o077:
+            raise ValueError("worker receipt database and sidecars must be owner-only")
 
 
 class DurableWorkerReceipts:
@@ -60,18 +85,9 @@ class DurableWorkerReceipts:
             raise ValueError("worker receipt parent must exist and path cannot be a symlink")
         if self.path.exists() and not self.path.is_file():
             raise ValueError("worker receipt database must be a regular file")
-        if self.path.exists():
-            # Path.resolve() does not reveal hardlinks. Opening the mailbox or
-            # auth database under an alternate receipt filename would silently
-            # share one database/authority boundary.
-            if any(os.path.samefile(self.path, protected) for protected in
-                   (inbox.mailbox.path, inbox.channel.path)):
-                raise ValueError("worker receipt ledger hardlink aliases mailbox/auth database")
-            if self.path.stat().st_nlink != 1:
-                raise ValueError("worker receipt ledger must not have hardlink aliases")
         if os.name == "posix" and self.path.parent.stat().st_mode & 0o077:
             raise ValueError("worker receipt parent directory must be owner-only")
-        _check_existing_file_security(self.path)
+        _check_receipt_files(self.path)
 
         self.inbox = inbox
         flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
@@ -82,9 +98,7 @@ class DurableWorkerReceipts:
                 raise ValueError("worker receipt database cannot be a symlink") from None
         else:
             os.close(descriptor)
-        _check_existing_file_security(self.path)
-        if self.path.stat().st_nlink != 1:
-            raise ValueError("worker receipt ledger must not have hardlink aliases")
+        _check_receipt_files(self.path)
         self._conn: sqlite3.Connection | None = sqlite3.connect(
             self.path, timeout=5.0, isolation_level=None)
         try:

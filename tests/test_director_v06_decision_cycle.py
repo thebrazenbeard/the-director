@@ -10,6 +10,7 @@ from pathlib import Path
 from runtime.director.coordinator import DirectorCoordinator
 from runtime.director.decision_cycle import assess_decision_cycle
 from runtime.director.messenger import DirectorMailbox
+from runtime.director.mission_graph import MissionGraph
 from runtime.director.reasoning import LocalReasoner
 from runtime.director.recovery_copy import stage_recovery_copy
 from runtime.director.world_state import WorldState
@@ -94,6 +95,17 @@ class DecisionCycleTests(unittest.TestCase):
         self.assertEqual(blocked["probe_proposals"][0]["graph_ready_capability_ids"], [])
         self.assertEqual(blocked["status"], "OPERATOR_CONFIGURATION_REQUIRED")
 
+    def test_direct_assessment_cannot_spoof_graph_readiness(self):
+        declared = MissionGraph([node("quality_probe")], {"reader": 2}).snapshot()
+        forged_graph_state = {"graph": declared, "completed": [], "invalidated": [],
+                              "active": [], "unavailable_resources": [], "logical_tick": 0}
+        with self.assertRaisesRegex(ValueError, "graph readiness mismatches"):
+            assess_decision_cycle(
+                GOAL, CAPS, {"revision": 0, "facts": {}, "events": []}, RIVALS,
+                graph_ready=["signal_probe"], graph_snapshot=forged_graph_state,
+                operator_control={"paused": False, "stop_requested": False,
+                                  "confirmed_success_evidence_ids": []}, quarantined=False)
+
     def test_reorder_does_not_change_assessment_and_duplicate_profile_cannot_game_ranking(self):
         self.graph()
         first = self.coordinator.assess_decision_cycle(hypotheses=RIVALS)
@@ -140,6 +152,30 @@ class DecisionCycleTests(unittest.TestCase):
                           for p in after["probe_proposals"]])
         self.assertEqual(after["hypothesis_assessment"]["distinct_prediction_profiles"], 3)
         self.assertIn(["b", "d"], after["hypothesis_assessment"]["observational_equivalence_groups"])
+        self.assertNotEqual(before["input_sha256"], after["input_sha256"])
+
+    def test_unshared_unknown_prediction_cannot_spoof_probe_ranking(self):
+        self.graph()
+        rivals = [
+            {"hypothesis_id": "a", "predictions": {"m": 0, "z": 0}},
+            {"hypothesis_id": "b", "predictions": {"m": 0, "z": 1}},
+            {"hypothesis_id": "c", "predictions": {"m": 1, "z": 0}},
+        ]
+        before = self.coordinator.assess_decision_cycle(hypotheses=rivals)
+        # `unique` is unobserved, but no other viable hypothesis predicts it;
+        # it offers no discriminating experiment and cannot give b a new vote.
+        clone = {"hypothesis_id": "d", "predictions": {"m": 0, "z": 1,
+                                                         "unique": 999}}
+        after = self.coordinator.assess_decision_cycle(hypotheses=rivals + [clone])
+        self.assertEqual([(p["metric"], p["distinguished_pair_count"])
+                          for p in before["probe_proposals"]], [("m", 2), ("z", 2)])
+        self.assertEqual([(p["metric"], p["distinguished_pair_count"])
+                          for p in before["probe_proposals"]],
+                         [(p["metric"], p["distinguished_pair_count"])
+                          for p in after["probe_proposals"]])
+        self.assertEqual(after["hypothesis_assessment"]["distinct_prediction_profiles"], 3)
+        self.assertIn(["b", "d"], after["hypothesis_assessment"]["observational_equivalence_groups"])
+        self.assertNotIn("unique", [p["metric"] for p in after["probe_proposals"]])
         self.assertNotEqual(before["input_sha256"], after["input_sha256"])
 
     def test_only_one_effective_rival_profile_has_no_discriminating_probe(self):
