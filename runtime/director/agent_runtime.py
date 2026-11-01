@@ -8,6 +8,11 @@ code. Nothing auto-starts, opens a port, runs a plugin, or touches external
 devices. Process and protocol limits are not a general OS-level sandbox;
 malicious executable code is categorically not an accepted input.
 
+An explicit ``require_os_principal_isolation`` request fails closed before a
+child process or working directory is created: there is currently no verified
+OS identity/ACL isolation provider. The default data-only subprocess remains
+backward-compatible, and ``status`` labels its actual security boundary.
+
 Consent and source identity here are declared by the local caller, **not
 cryptographically authenticated**. A source checksum and a local consent flag
 are insufficient to establish the subjective identity of any conscious being.
@@ -144,13 +149,22 @@ class IsolatedAgentRuntime:
         cls, restored_record: Mapping[str, object], *,
         operator_approval: Mapping[str, object], max_steps: int = 32,
         request_timeout: float = 8.0,
+        require_os_principal_isolation: bool = False,
     ) -> "IsolatedAgentRuntime":
         """Start one new local child after an explicit target-bound decision.
 
         ``restored_record`` should be the result of ``restore_agent_state``;
         this API cannot independently authenticate a claimed operator or
         detect whether another *host process* has already imported the record.
+
+        The optional strict flag never silently falls back to a subprocess
+        under the caller's identity. A future OS provider needs a separate
+        reviewed implementation and real host qualification.
         """
+        if type(require_os_principal_isolation) is not bool:
+            raise ValueError("require_os_principal_isolation must be a boolean")
+        if require_os_principal_isolation:
+            raise RuntimeError("OS-principal isolation is unavailable: no verified provider configured")
         normalized = _validate_record(restored_record, operator_approval)
         if type(max_steps) is not int or not 1 <= max_steps <= _MAX_STEPS:
             raise ValueError("max_steps must be between 1 and 256")
@@ -253,8 +267,11 @@ class IsolatedAgentRuntime:
         return data
 
     def status(self) -> dict[str, object]:
-        """Return health, bounded work counters and metadata, not memories."""
-        return self._request({"op": "STATUS"})
+        """Return health and the honest OS-security boundary, not memories."""
+        status = self._request({"op": "STATUS"})
+        status["os_principal_isolation_status"] = "NOT_VERIFIED"
+        status["isolation_mechanism"] = "SAME_ACCOUNT_SUBPROCESS"
+        return status
 
     def observe(self, *, observation_id: str, metric: str, value: int | float) -> dict[str, object]:
         """Admit a *declared*, never independently verified metric reading."""

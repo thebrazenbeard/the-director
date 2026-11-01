@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
 from .auth_channel import AuthenticatedChannel
+from .decision_cycle import assess_decision_cycle as _assess_decision_cycle
 from .messenger import DirectorMailbox
 from .mission_graph import MissionGraph
 from .stop_policy import evaluate_stop
@@ -1163,3 +1164,47 @@ class DirectorCoordinator:
                 "effect_status": "NOT_EXECUTED", "worker_stopped_verified": False,
                 "authentication_mode": self._authentication_mode(),
                 "recovery_quarantine": quarantine}
+
+    def assess_decision_cycle(
+        self, *, hypotheses: Sequence[Mapping[str, object]] = (),
+    ) -> dict[str, object]:
+        """Assess current evidence, rival probes and DAG readiness without effects.
+
+        Even an eligible analytical probe remains a proposal. This method does
+        not issue a mission, acknowledge mail, confirm observations, mutate
+        coordinator state, start a worker, or claim source authentication.
+        The read-only transaction binds every input to one SQLite snapshot.
+        """
+        conn = self._connection()
+        conn.execute("BEGIN")
+        try:
+            config = self._config(conn)
+            world_snapshot = self._world(conn).snapshot()
+            context = self._graph_context(conn)
+            if context is None:
+                ready = None
+                graph_snapshot = None
+            else:
+                ready = [row["mission_id"] for row in context["graph"].ready(
+                    completed=context["completed"], in_progress=context["active"],
+                    failed_or_cancelled=context["invalidated"],
+                    unavailable_resources=context["unavailable"],
+                    now_tick=context["now_tick"],
+                )]
+                graph_snapshot = {
+                    "graph": context["graph"].snapshot(),
+                    "completed": sorted(context["completed"]),
+                    "invalidated": sorted(context["invalidated"]),
+                    "active": sorted(context["active"]),
+                    "unavailable_resources": sorted(context["unavailable"]),
+                    "logical_tick": context["now_tick"],
+                }
+            operator_control = self._operator_control(conn)
+            quarantined = self._recovery_quarantine(conn) is not None
+        finally:
+            conn.execute("ROLLBACK")
+        return _assess_decision_cycle(
+            config["goal"], config["capabilities"], world_snapshot, hypotheses,
+            graph_ready=ready, graph_snapshot=graph_snapshot,
+            operator_control=operator_control, quarantined=quarantined,
+        )

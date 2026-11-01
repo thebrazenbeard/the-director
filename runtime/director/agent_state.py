@@ -39,6 +39,7 @@ _CONSENT_KEYS = frozenset(
     {"approved", "agent_id", "source_instance_id", "target_domain", "allow_memories", "operator_ref"}
 )
 _APPROVAL_KEYS = frozenset({"approved", "agent_id", "new_instance_id", "target_domain"})
+_CANCEL_APPROVAL_KEYS = _APPROVAL_KEYS | {"purpose"}
 _BODY_KEYS = frozenset(
     {"schema_version", "capsule_id", "subject_kind", "agent_id", "source_instance_id",
      "target_domain", "consent", "state", "memory_manifest"}
@@ -249,6 +250,10 @@ class AgentStateLedger:
 
     The ledger is necessary for durable duplicate-import detection. It is not
     an authentication service, confidential store, or distributed lock.
+    A retained original capsule can reconstruct an admitted inert record after
+    a caller crash; the ledger stores only its digest and binding metadata.
+    Terminal cancellation tombstones block future reconstruction but preserve
+    the original replay reservation. No runtime is started by either API.
     Each caller selects its path; opening the class is the only I/O trigger.
     """
 
@@ -280,6 +285,12 @@ class AgentStateLedger:
                 "capsule_id TEXT PRIMARY KEY, digest TEXT NOT NULL, "
                 "source_instance_id TEXT NOT NULL, new_instance_id TEXT NOT NULL UNIQUE, "
                 "agent_id TEXT NOT NULL, target_domain TEXT NOT NULL)"
+            )
+            # Additive on pre-v0.6 ledgers: no mutation of the existing v1
+            # receipt schema, and no copied agent text or memory on disk.
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS cancelled_restored_capsules ("
+                "capsule_id TEXT PRIMARY KEY)"
             )
         except BaseException:
             self._conn.close()
@@ -313,6 +324,27 @@ class AgentStateLedger:
         if row is not None:
             raise ValueError("capsule already restored or target instance already used")
 
+    def _require_receipt(self, body: Mapping[str, object], digest: str,
+                         new_instance_id: str) -> None:
+        """Recheck every persisted binding, including the caller-supplied bytes."""
+        row = self._conn.execute(
+            "SELECT digest,source_instance_id,new_instance_id,agent_id,target_domain "
+            "FROM restored_capsules WHERE capsule_id=?", (body["capsule_id"],),
+        ).fetchone()
+        if row is None:
+            raise ValueError("no committed restore receipt for this capsule")
+        if (not hmac.compare_digest(row[0], digest)
+                or row[1:] != (body["source_instance_id"], new_instance_id,
+                                body["agent_id"], body["target_domain"])):
+            raise ValueError("restore receipt does not match capsule digest or target binding")
+
+    def _check_not_cancelled(self, capsule_id: str) -> None:
+        if self._conn.execute(
+            "SELECT 1 FROM cancelled_restored_capsules WHERE capsule_id=?",
+            (capsule_id,),
+        ).fetchone() is not None:
+            raise ValueError("the committed restore has been permanently cancelled")
+
     def close(self) -> None:
         self._conn.close()
 
@@ -323,9 +355,10 @@ class AgentStateLedger:
         self.close()
 
 
-def _preflight(
+def _authorize_handoff(
     capsule: bytes, *, target_domain: str, new_instance_id: str,
     operator_approval: Mapping[str, object], ledger: AgentStateLedger,
+    cancellation: bool = False,
 ) -> tuple[dict[str, Any], str, str]:
     parsed = _parse(capsule)
     body = parsed["body"]
@@ -335,15 +368,47 @@ def _preflight(
         raise ValueError("target domain differs from capsule's consented domain")
     if new_instance_id == body["source_instance_id"]:
         raise ValueError("cannot overwrite the source instance")
-    a = _keys(operator_approval, _APPROVAL_KEYS, "operator_approval")
+    a = _keys(operator_approval, _CANCEL_APPROVAL_KEYS if cancellation else _APPROVAL_KEYS,
+              "operator_approval")
     if a["approved"] is not True or (
         a["agent_id"], a["new_instance_id"], a["target_domain"]
     ) != (body["agent_id"], new_instance_id, target_domain):
         raise ValueError("separate target-bound operator approval required")
+    if cancellation and a["purpose"] != "CANCEL_DATA_ONLY_RESTORE":
+        raise ValueError("explicit cancellation purpose is required")
     if not isinstance(ledger, AgentStateLedger):
         raise ValueError("durable AgentStateLedger required for anti-replay")
+    return parsed, target_domain, new_instance_id
+
+
+def _preflight(
+    capsule: bytes, *, target_domain: str, new_instance_id: str,
+    operator_approval: Mapping[str, object], ledger: AgentStateLedger,
+) -> tuple[dict[str, Any], str, str]:
+    parsed, target_domain, new_instance_id = _authorize_handoff(
+        capsule, target_domain=target_domain, new_instance_id=new_instance_id,
+        operator_approval=operator_approval, ledger=ledger,
+    )
+    body = parsed["body"]
     ledger._check_available(body["capsule_id"], new_instance_id)
     return parsed, target_domain, new_instance_id
+
+
+def _restored_record(body: Mapping[str, object], new_instance_id: str) -> dict[str, object]:
+    """Deterministic inert copy; state bytes exist only in the caller's capsule."""
+    return {
+        "new_instance_id": new_instance_id,
+        "agent_id": body["agent_id"],
+        "restored_from_instance_id": body["source_instance_id"],
+        "capsule_id": body["capsule_id"],
+        "target_domain": body["target_domain"],
+        "subject_kind": "SOFTWARE_AGENT",
+        "state": json.loads(_canonical(body["state"])),
+        "memory_manifest": dict(body["memory_manifest"]),
+        "authority": "NOT_GRANTED",
+        "effects": "NOT_EXECUTED",
+        "continuity_claim": "INFORMATION_STATE_COPY_ONLY",
+    }
 
 
 def preview_agent_state_restore(
@@ -400,20 +465,67 @@ def restore_agent_state(
     ledger._admit(body, parsed["sha256"], new_instance_id)
     # New identity is unambiguous and detached. This record cannot instruct a
     # host or acquire additional permissions from source-state metadata.
-    return {
-        "new_instance_id": new_instance_id,
-        "agent_id": body["agent_id"],
-        "restored_from_instance_id": body["source_instance_id"],
-        "capsule_id": body["capsule_id"],
-        "target_domain": target_domain,
-        "subject_kind": "SOFTWARE_AGENT",
-        "state": json.loads(_canonical(body["state"])),
-        "memory_manifest": dict(body["memory_manifest"]),
-        "authority": "NOT_GRANTED",
-        "effects": "NOT_EXECUTED",
-        "continuity_claim": "INFORMATION_STATE_COPY_ONLY",
-    }
+    return _restored_record(body, new_instance_id)
+
+
+def resume_agent_state_restore(
+    capsule: bytes, *, target_domain: str, new_instance_id: str,
+    operator_approval: Mapping[str, object], ledger: AgentStateLedger,
+) -> dict[str, object]:
+    """Reconstruct an *already admitted* inert copy after a lost response.
+
+    Requires the caller-retained original capsule and fresh target-bound local
+    approval. Checks the immutable receipt's digest/source/target bindings;
+    never marks a new import, launches a child, or returns authority. The
+    ledger stores no memory text. A concurrent cancellation after this read
+    can invalidate the result; runtime activation remains a separate decision.
+    Consent and operator identity are caller declarations, not authentication.
+    """
+    parsed, _, new_instance_id = _authorize_handoff(
+        capsule, target_domain=target_domain, new_instance_id=new_instance_id,
+        operator_approval=operator_approval, ledger=ledger,
+    )
+    body = parsed["body"]
+    ledger._require_receipt(body, parsed["sha256"], new_instance_id)
+    ledger._check_not_cancelled(body["capsule_id"])
+    return _restored_record(body, new_instance_id)
+
+
+def cancel_agent_state_restore(
+    capsule: bytes, *, target_domain: str, new_instance_id: str,
+    operator_approval: Mapping[str, object], ledger: AgentStateLedger,
+) -> dict[str, object]:
+    """Permanently refuse future resume for one admitted data-only handoff.
+
+    This is a local, declarative operator intent. It cannot revoke copies
+    already returned to a caller or stop a separately launched process.
+    The replay reservation remains consumed to prevent target-ID reuse.
+    """
+    parsed, _, new_instance_id = _authorize_handoff(
+        capsule, target_domain=target_domain, new_instance_id=new_instance_id,
+        operator_approval=operator_approval, ledger=ledger, cancellation=True,
+    )
+    body = parsed["body"]
+    # A locked SQLite file can reject BEGIN itself. No transaction exists in
+    # that case, so rolling back here would mask the original lock error.
+    ledger._conn.execute("BEGIN IMMEDIATE")
+    try:
+        ledger._require_receipt(body, parsed["sha256"], new_instance_id)
+        ledger._conn.execute(
+            "INSERT OR IGNORE INTO cancelled_restored_capsules (capsule_id) VALUES (?)",
+            (body["capsule_id"],),
+        )
+        ledger._conn.execute("COMMIT")
+    except BaseException:
+        if ledger._conn.in_transaction:
+            ledger._conn.execute("ROLLBACK")
+        raise
+    return {"status": "CANCELLED_DATA_ONLY", "capsule_id": body["capsule_id"],
+            "agent_id": body["agent_id"], "new_instance_id": new_instance_id,
+            "target_domain": body["target_domain"], "effects": "NOT_EXECUTED",
+            "runtime_stopped_verified": False}
 
 
 __all__ = ["SCHEMA_VERSION", "AgentStateLedger", "export_agent_state",
-           "preview_agent_state_restore", "restore_agent_state"]
+           "preview_agent_state_restore", "restore_agent_state",
+           "resume_agent_state_restore", "cancel_agent_state_restore"]
