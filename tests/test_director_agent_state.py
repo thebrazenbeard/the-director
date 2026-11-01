@@ -7,6 +7,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from runtime.director.agent_state import (
@@ -233,7 +234,9 @@ class DirectorAgentStateTests(unittest.TestCase):
     def test_rejects_target_domain_mismatch(self):
         with self.assertRaisesRegex(ValueError, "target domain"):
             self._restore(_export(), target_domain="another-domain")
-        with sqlite3.connect(self.ledger_path) as conn:
+        # SQLite connection context managers commit/rollback but do not close;
+        # leaving a handle open prevents temp-directory cleanup on Windows.
+        with closing(sqlite3.connect(self.ledger_path)) as conn:
             count = conn.execute("SELECT COUNT(*) FROM restored_capsules").fetchone()[0]
         self.assertEqual(count, 0)
 
