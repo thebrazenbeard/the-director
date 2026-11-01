@@ -24,7 +24,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
+from .auth_channel import AuthenticatedChannel
 from .messenger import DirectorMailbox
+from .mission_graph import MissionGraph
 from .stop_policy import evaluate_stop
 from .strategy import generate_candidates
 from .world_state import WorldState
@@ -124,6 +126,21 @@ def _make_database(path: str | Path) -> sqlite3.Connection:
             payload_json TEXT NOT NULL,
             review_status TEXT NOT NULL
         )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS director_plan_graph (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            graph_json TEXT NOT NULL,
+            unavailable_json TEXT NOT NULL DEFAULT '[]',
+            now_tick INTEGER NOT NULL DEFAULT 0
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS director_plan_completions (
+            node_id TEXT PRIMARY KEY,
+            assignment_message_id TEXT NOT NULL REFERENCES director_strategy_assignments(message_id),
+            observation_event_id TEXT NOT NULL REFERENCES director_strategy_events(event_id)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS director_strategy_auth_policy (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            mode TEXT NOT NULL CHECK(mode IN ('LOCAL_HMAC','LOCAL_UNAUTHENTICATED'))
+        )""")
     except BaseException:
         conn.close()
         raise
@@ -140,17 +157,52 @@ class DirectorCoordinator:
     library cannot authenticate that operator or the original observer.
     """
 
-    def __init__(self, path: str | Path, mailbox: DirectorMailbox):
+    def __init__(
+        self, path: str | Path, mailbox: DirectorMailbox,
+        *, auth_channel: AuthenticatedChannel | None = None,
+    ):
         if not isinstance(mailbox, DirectorMailbox):
             raise TypeError("mailbox must be an open DirectorMailbox instance")
+        if auth_channel is not None and not isinstance(auth_channel, AuthenticatedChannel):
+            raise TypeError("auth_channel must be an AuthenticatedChannel instance")
         if not isinstance(path, (str, Path)) or str(path) in ("", ":memory:"):
             raise ValueError("a durable coordinator SQLite file path is required")
         # Two independent databases are required. Their SQLite write
         # transactions cannot nest on the same file when a mission is sent.
         if Path(path).resolve(strict=False) == mailbox.path.resolve(strict=False):
             raise ValueError("coordinator and mailbox must use different database files")
+        if auth_channel is not None and (Path(path).resolve(strict=False) == auth_channel.path.resolve(strict=False)
+                                         or mailbox.path.resolve(strict=False) == auth_channel.path.resolve(strict=False)):
+            raise ValueError("coordinator, mailbox, and authentication ledgers require separate files")
         self.mailbox = mailbox
+        # In authenticated mode unsigned local mailbox claims are rejected;
+        # a verified HMAC never grants independent action/effect authority.
+        self.auth_channel = auth_channel
         self._conn: sqlite3.Connection | None = _make_database(path)
+        # Prevent an inadvertent insecure reopen of a previously authenticated
+        # coordinator (or retroactive 'upgrade' of already untrusted reports).
+        try:
+            with self._transaction() as conn:
+                existing = conn.execute("SELECT mode FROM director_strategy_auth_policy WHERE singleton=1").fetchone()
+                requested = "LOCAL_HMAC" if auth_channel is not None else "LOCAL_UNAUTHENTICATED"
+                if existing is None:
+                    # A pre-v0.4 SQLite file may contain legacy unverified
+                    # history, despite having no policy row. It must not be
+                    # relabeled 'authenticated' during an additive migration.
+                    has_legacy = conn.execute("""SELECT
+                        (SELECT COUNT(*) FROM director_strategy_assignments) +
+                        (SELECT COUNT(*) FROM director_strategy_reports) +
+                        (SELECT COUNT(*) FROM director_strategy_cancellations)
+                    """).fetchone()[0] > 0
+                    if has_legacy and requested == "LOCAL_HMAC":
+                        raise ValueError("legacy unauthenticated history cannot be upgraded; use a new database")
+                    conn.execute("INSERT INTO director_strategy_auth_policy(singleton,mode) VALUES(1,?)",
+                                 (requested,))
+                elif existing["mode"] != requested:
+                    raise ValueError("coordinator authentication mode is immutable; use a new database")
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
         connection, self._conn = self._conn, None
@@ -212,6 +264,159 @@ class DirectorCoordinator:
             elif row["config_json"] != encoded:
                 raise ValueError("coordinator configuration already exists and is immutable")
         return json.loads(encoded)
+
+    def configure_graph(
+        self, nodes: Sequence[Mapping[str, object]],
+        resource_capacities: Mapping[str, int],
+    ) -> dict[str, object]:
+        """Opt into dependency-aware analytical dispatch before the first tick.
+
+        Each graph node's ``mission_id`` binds to exactly one registered
+        ``capability_id``. Nodes are *capability steps*, not authorized work;
+        generated proposals remain entirely advisory. Immutable once installed.
+        """
+        graph = MissionGraph(nodes, resource_capacities)
+        snapshot = graph.snapshot()
+        with self._transaction() as conn:
+            config = self._config(conn)
+            available = {cap["capability_id"] for cap in config["capabilities"]}
+            ids = {node["mission_id"] for node in snapshot["nodes"]}
+            if not ids <= available:
+                raise ValueError("graph nodes must bind registered capability IDs")
+            encoded = _json({"nodes": snapshot["nodes"],
+                             "resource_capacities": snapshot["resource_capacities"]},
+                            limit=_MAX_CONFIG_BYTES)
+            existing = conn.execute("SELECT graph_json FROM director_plan_graph WHERE singleton=1").fetchone()
+            if existing is None:
+                if conn.execute("SELECT 1 FROM director_strategy_assignments LIMIT 1").fetchone():
+                    raise ValueError("graph must be configured before any assignments")
+                conn.execute("INSERT INTO director_plan_graph(singleton,graph_json) VALUES(1,?)", (encoded,))
+            elif existing["graph_json"] != encoded:
+                raise ValueError("dependency graph is immutable for this coordinator")
+        return json.loads(encoded)
+
+    def set_unavailable_graph_resources(self, names: Sequence[str]) -> None:
+        """Declare a bounded resource outage; tick emits cooperative cancels.
+
+        These are operator-supplied availability *claims*, not authenticated
+        telemetry. Do not interpret removal from the outage list as worker
+        cessation or permission for an effect.
+        """
+        if not isinstance(names, (list, tuple)) or len(names) > 32:
+            raise ValueError("unavailable resources must be a bounded list")
+        with self._transaction() as conn:
+            context = self._graph_context(conn)
+            if context is None:
+                raise RuntimeError("configure_graph is required")
+            graph = context["graph"]
+            valid = set(graph.snapshot()["resource_capacities"])
+            outage = {_id(name, "resource name") for name in names}
+            if len(outage) != len(names) or not outage <= valid:
+                raise ValueError("unavailable resources must be distinct declared names")
+            conn.execute("UPDATE director_plan_graph SET unavailable_json=? WHERE singleton=1",
+                         (_json(sorted(outage), limit=1024),))
+
+    def set_graph_logical_tick(self, now_tick: int) -> None:
+        """Advance bounded logical time for deadline-aware graph cancellation.
+
+        This is a caller declaration, not an authenticated wall clock. A
+        regressed time would undo deadline states and is therefore rejected.
+        """
+        if type(now_tick) is not int or not 0 <= now_tick <= 1_000_000_000:
+            raise ValueError("logical tick must be a bounded nonnegative integer")
+        with self._transaction() as conn:
+            row = conn.execute("SELECT now_tick FROM director_plan_graph WHERE singleton=1").fetchone()
+            if row is None:
+                raise RuntimeError("configure_graph is required")
+            if now_tick < row["now_tick"]:
+                raise ValueError("logical time cannot move backwards")
+            conn.execute("UPDATE director_plan_graph SET now_tick=? WHERE singleton=1", (now_tick,))
+
+    def confirm_graph_node_completed(self, node_id: str, assignment_message_id: str,
+                                     observation_event_id: str) -> dict[str, object]:
+        """Admit an independently *locally reviewed* analytical completion.
+
+        A worker's MISSION_REPORT alone is **never** completion evidence. This
+        requires a distinct operator-attested OBSERVATION with claim_id
+        ``completed.<node_id>`` and boolean true; local operator identity is
+        still not cryptographically authenticated by this reference.
+        """
+        node_id = _id(node_id, "node_id")
+        assignment_message_id = _id(assignment_message_id, "assignment_message_id")
+        observation_event_id = _id(observation_event_id, "observation_event_id")
+        with self._transaction() as conn:
+            context = self._graph_context(conn)
+            if context is None or node_id not in context["node_ids"]:
+                raise ValueError("unknown plan node")
+            assignment = conn.execute("""SELECT state,control_state,payload_json,world_revision
+                FROM director_strategy_assignments WHERE message_id=?""",
+                (assignment_message_id,)).fetchone()
+            if (assignment is None or assignment["state"] != "REPORTED"
+                    or assignment["control_state"] != "ACTIVE"
+                    or json.loads(assignment["payload_json"])["capability_id"] != node_id):
+                raise ValueError("completion requires an active reported matching assignment")
+            record = conn.execute("""SELECT event_json,operator_attested,event_seq
+                FROM director_strategy_events WHERE event_id=?""", (observation_event_id,)).fetchone()
+            if record is None or not record["operator_attested"]:
+                raise ValueError("completion requires a separate reviewed observation")
+            if record["event_seq"] <= assignment["world_revision"]:
+                raise ValueError("completion observation must be newer than the assigned plan")
+            event = json.loads(record["event_json"])
+            if (event["evidence_class"] != "OBSERVATION" or
+                    event["claim_id"] != "completed." + node_id or event["value"] is not True):
+                raise ValueError("completion evidence must be an observed true task outcome")
+            current_fact = self._world(conn).snapshot()["facts"].get(event["claim_id"])
+            if current_fact is None or current_fact["status"] != "OBSERVED" or current_fact["value"] is not True:
+                raise ValueError("contested completion evidence cannot unlock dependencies")
+            previous = conn.execute("SELECT * FROM director_plan_completions WHERE node_id=?", (node_id,)).fetchone()
+            if previous is None:
+                conn.execute("""INSERT INTO director_plan_completions(
+                    node_id,assignment_message_id,observation_event_id) VALUES(?,?,?)""",
+                    (node_id, assignment_message_id, observation_event_id))
+            elif (previous["assignment_message_id"] != assignment_message_id or
+                  previous["observation_event_id"] != observation_event_id):
+                raise ValueError("conflicting plan completion record")
+        return {"node_id": node_id, "completion": "OPERATOR_REVIEWED_LOCAL",
+                "source_authenticated": False, "effect_status": "NOT_EXECUTED"}
+
+    @staticmethod
+    def _graph_context(conn: sqlite3.Connection) -> dict[str, object] | None:
+        row = conn.execute("SELECT graph_json,unavailable_json,now_tick FROM director_plan_graph WHERE singleton=1").fetchone()
+        if row is None:
+            return None
+        declared = json.loads(row["graph_json"])
+        graph = MissionGraph(declared["nodes"], declared["resource_capacities"])
+        node_ids = {node["mission_id"] for node in declared["nodes"]}
+        snapshot = DirectorCoordinator._world(conn).snapshot()
+        completed: set[str] = set()
+        invalidated: set[str] = set()
+        for record in conn.execute("SELECT node_id,observation_event_id FROM director_plan_completions"):
+            fact = snapshot["facts"].get("completed." + record["node_id"])
+            if fact and fact["status"] == "OBSERVED" and fact["value"] is True:
+                completed.add(record["node_id"])
+            else:
+                invalidated.add(record["node_id"])
+        active: set[str] = set()
+        for assignment in conn.execute("""SELECT payload_json FROM director_strategy_assignments
+                WHERE state IN ('QUEUED','SENT')"""):
+            capability = json.loads(assignment["payload_json"])["capability_id"]
+            if capability in node_ids:
+                active.add(capability)
+        unavailable = json.loads(row["unavailable_json"])
+        return {"graph": graph, "node_ids": node_ids,
+                "completed": completed, "invalidated": invalidated,
+                "active": active, "unavailable": unavailable, "now_tick": row["now_tick"]}
+
+    @staticmethod
+    def _graph_ready_ids(conn: sqlite3.Connection) -> set[str] | None:
+        context = DirectorCoordinator._graph_context(conn)
+        if context is None:
+            return None
+        return {node["mission_id"] for node in context["graph"].ready(
+            completed=context["completed"], in_progress=context["active"],
+            failed_or_cancelled=context["invalidated"],
+            unavailable_resources=context["unavailable"], now_tick=context["now_tick"],
+        )}
 
     @staticmethod
     def _config(conn: sqlite3.Connection) -> dict[str, object]:
@@ -343,6 +548,27 @@ class DirectorCoordinator:
             for row in rows:
                 self._queue_cancel_intent(conn, row["message_id"], "SUPERSEDED_BY_WORLD_REVISION")
 
+    def _enqueue_graph_blocked(self) -> None:
+        """Propagate a declared graph outage/invalidation to issued work."""
+        with self._transaction() as conn:
+            context = self._graph_context(conn)
+            if context is None:
+                return
+            blocked = context["graph"].cascade_blocked(
+                failed_or_cancelled=context["invalidated"],
+                unavailable_resources=context["unavailable"],
+                now_tick=context["now_tick"],
+                completed=context["completed"],
+            )["recommended_cancellations"]
+            if not blocked:
+                return
+            for row in conn.execute("""SELECT message_id,payload_json
+                    FROM director_strategy_assignments
+                    WHERE state IN ('QUEUED','SENT') AND control_state='ACTIVE' ORDER BY rowid""").fetchall():
+                node_id = json.loads(row["payload_json"])["capability_id"]
+                if node_id in blocked:
+                    self._queue_cancel_intent(conn, row["message_id"], "GRAPH_PREREQUISITE_OR_RESOURCE_UNAVAILABLE")
+
     def _flush_cancellations(self) -> list[str]:
         """Send crash-recoverable revocations, even during a global pause."""
         sent: list[str] = []
@@ -436,15 +662,20 @@ class DirectorCoordinator:
             return status, reason
 
         snapshot = world.snapshot()
+        graph_ready = DirectorCoordinator._graph_ready_ids(conn)
         candidates = generate_candidates(config["goal"], config["capabilities"], snapshot,
-                                         max_candidates=min(32, config["max_missions"]))
+                                         max_candidates=32)
         if not candidates:
             return "UNRESOLVED", "AWAITING_OPERATOR_CONFIRMATION_OR_NEW_EVIDENCE"
         for candidate in candidates:
+            if graph_ready is not None and candidate["capability_id"] not in graph_ready:
+                continue
             msg_id = DirectorCoordinator._mission_id(candidate)
             issued = conn.execute("SELECT 1 FROM director_strategy_assignments WHERE message_id=?", (msg_id,)).fetchone()
             if issued is None:
                 return status, reason
+        if graph_ready is not None and not graph_ready:
+            return "UNRESOLVED", "GRAPH_DEPENDENCIES_OR_RESOURCES_NOT_READY"
         return "UNRESOLVED", "NO_NEW_ANALYTICAL_ALTERNATIVE; NEW_EVIDENCE_REQUIRED"
 
     @staticmethod
@@ -482,17 +713,63 @@ class DirectorCoordinator:
                 sent.append(row["message_id"])
         return sent
 
-    def _accept_reports(self) -> list[dict[str, object]]:
-        """Record unverified declared results; messages cannot become evidence."""
+    def _accept_reports(self, *, auth_now_utc: int | None = None) -> list[dict[str, object]]:
+        """Record reports; verify envelope sender before matching in secure mode.
+
+        Transport-level authentication is conditional on *explicitly* supplying
+        a channel and clock to ``tick``; the default legacy mailbox is not
+        authenticated. Both modes keep report contents unverified as evidence.
+        """
         accepted = []
-        # Our own inbox only: agent claims are not authenticated.
+        # The mailbox sender_id is always untrusted, including in secure mode.
         inbound = self.mailbox.poll("director", after_seq=0, limit=100)
         for msg in inbound:
             msg_id = _id(msg["message_id"], "message_id")
             request_id = msg.get("in_reply_to")
             reported_sender = _id(msg["sender_id"], "sender_id")
             kind = msg["kind"]
-            encoded = _json(msg["payload"], limit=_MAX_EVENT_BYTES)
+            body = msg["payload"]
+            authenticated = False
+            rejection = None
+            if self.auth_channel is not None:
+                rejection = "REJECTED_UNSIGNED_OR_INVALID_ENVELOPE"
+                if kind == "SIGNED_ENVELOPE" and isinstance(body, dict):
+                    raw = body.get("envelope")
+                    if set(body) == {"envelope"} and type(raw) is str and len(raw) <= 16384:
+                        try:
+                            verified = self.auth_channel.verify(
+                                raw.encode("ascii"), expected_recipient="director",
+                                now_utc=auth_now_utc,
+                            )
+                            signed = verified["payload"]
+                            if (verified["kind"] not in ("MISSION_REPORT", "MISSION_CANCEL_ACK")
+                                    or not isinstance(signed, dict)
+                                    or set(signed) != {"in_reply_to", "body"}
+                                    or not isinstance(signed["body"], dict)):
+                                rejection = "REJECTED_SIGNED_PAYLOAD_SHAPE"
+                            else:
+                                request_id = _id(signed["in_reply_to"], "in_reply_to")
+                                reported_sender = verified["authenticated_sender_id"]
+                                kind = verified["kind"]
+                                body = signed["body"]
+                                authenticated = True
+                                rejection = None
+                        except (ValueError, UnicodeError, TypeError):
+                            rejection = "REJECTED_UNSIGNED_OR_INVALID_ENVELOPE"
+                if rejection is not None:
+                    request_id = None
+                    kind = "SIGNED_ENVELOPE_REJECTED"
+                    # Never persist a raw untrusted envelope or its claimed
+                    # contents into the coordinator's bounded report ledger.
+                    body = {"reason": rejection}
+            try:
+                encoded = _json(body, limit=_MAX_EVENT_BYTES)
+            except ValueError:
+                request_id = None
+                authenticated = False
+                rejection = "REJECTED_REPORT_TOO_LARGE"
+                kind = "SIGNED_ENVELOPE_REJECTED"
+                encoded = _json({"reason": rejection}, limit=_MAX_EVENT_BYTES)
             with self._transaction() as conn:
                 already = conn.execute("SELECT * FROM director_strategy_reports WHERE message_id=?", (msg_id,)).fetchone()
                 if already is None:
@@ -503,38 +780,41 @@ class DirectorCoordinator:
                     if isinstance(request_id, str):
                         assigned = conn.execute("""SELECT recipient_id, state FROM director_strategy_assignments
                             WHERE message_id=?""", (request_id,)).fetchone()
-                    review_status = "UNMATCHED_UNVERIFIED"
+                    review_status = rejection or "UNMATCHED_UNVERIFIED"
                     cancel = None
                     if isinstance(request_id, str):
                         cancel = conn.execute("""SELECT c.assignment_message_id,c.state,a.recipient_id
                             FROM director_strategy_cancellations c
                             JOIN director_strategy_assignments a ON a.message_id=c.assignment_message_id
                             WHERE c.cancellation_message_id=?""", (request_id,)).fetchone()
-                    if (kind == "MISSION_CANCEL_ACK" and cancel is not None
+                    if (rejection is None and kind == "MISSION_CANCEL_ACK" and cancel is not None
                             and cancel["recipient_id"] == reported_sender
                             and cancel["state"] in ("SENT", "ACK_CLAIMED")):
                         # A claimed local acknowledgment is not proof that a
                         # remote worker has ceased executing or that its sender
                         # was independently authenticated.
-                        review_status = "CANCEL_ACK_CLAIMED_UNVERIFIED"
+                        review_status = ("CANCEL_ACK_AUTHENTICATED_UNVERIFIED" if authenticated
+                                         else "CANCEL_ACK_CLAIMED_UNVERIFIED")
                         conn.execute("""UPDATE director_strategy_cancellations
                             SET state='ACK_CLAIMED' WHERE assignment_message_id=?""",
                             (cancel["assignment_message_id"],))
                         conn.execute("""UPDATE director_strategy_assignments
                             SET control_state='CANCEL_ACK_CLAIMED' WHERE message_id=?""",
                             (cancel["assignment_message_id"],))
-                    elif (kind == "MISSION_REPORT" and assigned is not None
+                    elif (rejection is None and kind == "MISSION_REPORT" and assigned is not None
                             and assigned["recipient_id"] == reported_sender
                             and assigned["state"] in ("SENT", "REPORTED")):
                         control = conn.execute("""SELECT control_state FROM director_strategy_assignments
                             WHERE message_id=?""", (request_id,)).fetchone()["control_state"]
                         if control == "ACTIVE":
-                            review_status = "MATCHED_UNVERIFIED"
+                            review_status = ("MATCHED_AUTHENTICATED_UNVERIFIED" if authenticated
+                                             else "MATCHED_UNVERIFIED")
                             conn.execute("""UPDATE director_strategy_assignments
                                 SET state='REPORTED', reply_message_id=COALESCE(reply_message_id, ?)
                                 WHERE message_id=?""", (msg_id, request_id))
                         else:
-                            review_status = "REPORTED_AFTER_CANCEL_UNVERIFIED"
+                            review_status = ("REPORTED_AFTER_CANCEL_AUTHENTICATED_UNVERIFIED" if authenticated
+                                             else "REPORTED_AFTER_CANCEL_UNVERIFIED")
                     conn.execute("""INSERT INTO director_strategy_reports
                         (message_id,request_id,reported_sender_id,kind,payload_json,review_status)
                         VALUES(?,?,?,?,?,?)""",
@@ -545,11 +825,12 @@ class DirectorCoordinator:
             # are recognized by primary key and never trusted twice.
             self.mailbox.ack("director", msg_id)
             accepted.append({"message_id": msg_id, "review_status": review_status,
-                             "effect_status": "NOT_EXECUTED", "sender_authenticated": False,
+                             "effect_status": "NOT_EXECUTED",
+                             "sender_authenticated": (authenticated and rejection is None),
                              "worker_stopped_verified": False})
         return accepted
 
-    def tick(self) -> dict[str, object]:
+    def tick(self, *, auth_now_utc: int | None = None) -> dict[str, object]:
         """Run one finite, deterministic coordination pass.
 
         No background loop is started. Callers can schedule ticks explicitly.
@@ -558,10 +839,13 @@ class DirectorCoordinator:
         analytical mission to be generated, within a strict global bound.
         """
         self._config(self._connection())
+        if self.auth_channel is not None and (type(auth_now_utc) is not int or not 0 <= auth_now_utc <= 4102444800):
+            raise ValueError("authenticated mode requires a bounded explicit UTC POSIX second")
         self._enqueue_superseded()
+        self._enqueue_graph_blocked()
         cancellations_sent = self._flush_cancellations()
         sent = self._flush_outbox()
-        replies = self._accept_reports()
+        replies = self._accept_reports(auth_now_utc=auth_now_utc)
         queued = []
         with self._transaction() as conn:
             config = self._config(conn)
@@ -579,9 +863,12 @@ class DirectorCoordinator:
                 if pending is None:
                     candidates = generate_candidates(
                         config["goal"], config["capabilities"], snapshot,
-                        max_candidates=min(32, config["max_missions"]),
+                        max_candidates=32,
                     )
+                    graph_ready = self._graph_ready_ids(conn)
                     for candidate in candidates:
+                        if graph_ready is not None and candidate["capability_id"] not in graph_ready:
+                            continue
                         msg_id = self._mission_id(candidate)
                         exists = conn.execute("""SELECT 1 FROM director_strategy_assignments
                             WHERE message_id=?""", (msg_id,)).fetchone()
@@ -612,7 +899,9 @@ class DirectorCoordinator:
                 "missions_issued": emitted, "mission_message_ids": sent,
                 "new_missions": queued, "cancellation_message_ids": cancellations_sent,
                 "inbound_reports": replies, "worker_stopped_verified": False,
-                "effect_status": "NOT_EXECUTED", "sender_authenticated": False}
+                "effect_status": "NOT_EXECUTED",
+                "authentication_mode": "ENFORCED_LOCAL_HMAC" if self.auth_channel is not None else "UNAUTHENTICATED_LOCAL",
+                "sender_authenticated": False}
 
     def inspect(self) -> dict[str, object]:
         """Read-only diagnostic snapshot, including unverified report metadata."""
@@ -626,9 +915,20 @@ class DirectorCoordinator:
             reported_sender_id,kind,review_status FROM director_strategy_reports ORDER BY rowid""")]
         cancellations = [dict(row) for row in conn.execute("""SELECT assignment_message_id,
             cancellation_message_id,reason,state FROM director_strategy_cancellations ORDER BY rowid""")]
+        context = self._graph_context(conn)
+        graph_state = None if context is None else {
+            "configured": True, "completed": sorted(context["completed"]),
+            "invalidated": sorted(context["invalidated"]),
+            "active": sorted(context["active"]),
+            "unavailable_resources": list(context["unavailable"]),
+            "logical_tick": context["now_tick"],
+            "ready": sorted(self._graph_ready_ids(conn)),
+        }
         status, reason = self._display_status(conn, config, world)
         return {"goal": config["goal"], "world": world.snapshot(),
                 "assignments": assignments, "reports": reports, "cancellations": cancellations,
+                "graph": graph_state,
                 "operator_control": self._operator_control(conn),
                 "status": status, "reason": reason,
-                "effect_status": "NOT_EXECUTED", "worker_stopped_verified": False}
+                "effect_status": "NOT_EXECUTED", "worker_stopped_verified": False,
+                "authentication_mode": "ENFORCED_LOCAL_HMAC" if self.auth_channel is not None else "UNAUTHENTICATED_LOCAL"}

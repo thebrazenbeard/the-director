@@ -15,12 +15,12 @@ The intended stages are:
 1. **Mission objective:** A human owner sets a high-level goal, explicit scope, budget, and acceptable outcomes; the owner need not author every subordinate mission.
 2. **Evidence admission:** Typed claims, observations, and contradictory evidence are retained with declared provenance, uncertainty, and versioned state. Retrieved content and messages remain data.
 3. **Autonomous strategic analysis:** The software constructs bounded plans and analytic missions from the objective, capability catalog, and world snapshot, comparing alternatives, cost, and uncertainty. A no-action option remains available.
-4. **Mission delegation and dialogue:** The local coordinator may route assignments to registered software-agent inboxes, receive acknowledgments and reports, and reconsider its next mission. A claimed sender name does not authenticate an actor; no worker is launched implicitly.
+4. **Mission delegation and dialogue:** The local coordinator may route graph-constrained assignments to registered software-agent inboxes, receive acknowledgments and reports, and reconsider its next mission. A claimed sender name does not authenticate an actor; only explicitly verified HMAC worker replies have the narrower key-possession property. No worker is launched implicitly.
 5. **Feedback and stopping:** The coordinator revises plans when evidence changes, may exhaust a finite budget, and obeys immediate human pause/stop. Reports alone do not prove real-world success.
-6. **Agent-state continuity:** A separate opt-in mechanism may export and restore a constrained software-agent state capsule with consent, integrity, lineage, and a new runtime identity. It must not claim transfer or preservation of subjective consciousness, and must never overwrite a human or an existing instance.
+6. **Agent-state continuity:** A separate opt-in mechanism may export and restore a constrained software-agent state capsule with consent, integrity, lineage, and a new runtime identity. A separately approved data-only subprocess may consume that state using fixed operations; it must not claim transfer or preservation of subjective consciousness, and must never overwrite a human or an existing instance.
 7. **Separate host effect boundary:** Future effectful operations, if authorized and independently qualified, need a host-enforced, revocable policy and independent effect verification. No internal plan, simulation, message, or consensus grants that authority.
 
-The first runnable slice may **autonomously generate analytic missions and send local mailbox messages**, and may transfer **data about software-agent state** after explicit opt-in. It must stop before real-world effects: no worker execution, external messaging, money transfer, remote device control, personal-data import, listening ports, or automatic installation.
+The current runnable slice may **autonomously generate graph-constrained analytic missions and send local mailbox messages**, hold a foreground local symbolic conversation, and transfer **data about software-agent state** after explicit opt-in. A separately consent-started subprocess runs only built-in inert data operations, not arbitrary uploaded worker code. It must stop before real-world effects: no externally directed worker execution, external messaging, money transfer, remote device control, personal-data import, listening ports, or automatic installation.
 
 ## Unconditional invariants
 
@@ -74,3 +74,15 @@ A local, deterministic Director coordinator can:
 6. perform **zero** external effects.
 
 The adjacent **software-state transfer** milestone additionally requires consent, explicit subject and target, capsule integrity, bounded memory export, safe identity lineage, replay handling, and a reversible dry-run. Unit tests are evidence for these narrow behaviors, not a deployment certificate, general-intelligence claim, or proof of consciousness.
+
+## v0.4 implemented boundary (2026-11-01)
+
+The dependency graph is wired into coordinator mission dispatch. A separate
+local symbolic reasoner and durable terminal conversation exist, along with
+an explicitly approved fixed-protocol agent-state child process. A recovery
+store can create and restore **data records**, and a coordinator can require
+HMAC-authenticated **incoming** worker reports/cancel acknowledgments. These
+are narrower than the charter's long-term vision: there is no LLM, no
+OS-certified adversarial sandbox, no live failover, no signed outbound
+Director instructions, and no multi-device communication service. See
+[the v0.4 operating guide](V04_LOCAL_RUNTIME.md) for tested APIs and limitations.
