@@ -1,21 +1,23 @@
 # The Director
 
-**An original, human-governed decision-coordination research project built from the God Brain source lineage.**
+**An original strategic-intelligence, mission-coordination, and software-agent continuity research project built from the God Brain source lineage.**
 
-The Director is named for its intended function: coordinating evidence, competing plans, decisions, and accountable follow-through around human-defined objectives. Its identity, scope, and constraints are defined by this project's own charter and tested contracts.
+The Director is named for its intended function: working toward an operator-declared objective by maintaining a changing model of the world, constructing strategies, generating analytical missions, coordinating specialized agents, processing feedback, and deciding when to revise or stop. Its identity, scope, and constraints are defined by this project's own charter and tested contracts.
 
-The Director's proposed role is to help a human understand a situation, compare competing plans, recognize uncertainty and conflicts, and make deliberate decisions. **It is not an omniscient controller, autonomous authority, or a system permitted to intervene in people's lives.**
+Its second core research direction is **continuity and transfer of software-agent state**: an explicitly consented handoff of permitted identity records, selected memory summaries, and goal parameters as a new software-state record. It does not itself launch an instance. This does **not** claim to transfer human consciousness, subjective experience, or biological minds.
+
+**Autonomous planning is not unrestricted authority.** The Director may produce and coordinate local analytical tasks, but it is not an omniscient controller and may not independently intervene in people's lives, access hosts, obtain permissions, or spend money.
 
 > **License:** The inherited source is visible but **not open source**; Patrick Sims's original material remains proprietary. Commercial use, redistribution, public derivatives, and hosted services require permission under [LICENSE](LICENSE) and [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md). Existing third-party rights and [NOTICE](NOTICE) remain in force.
 
 ## Intended operating model
 
-1. **Mission:** A human defines an objective, constraints, and acceptable outcomes.
-2. **Evidence:** Observations, interpretations, and uncertain hypotheses retain source and evidence class.
-3. **Options:** The system compares competing plans, tradeoffs, costs, and failure modes; it may abstain.
-4. **Decision:** A deterministic policy boundary blocks unsafe, stale, out-of-scope, or unapproved action requests.
-5. **Authorization:** Protected effects require separate, current, verifiable human and host authority.
-6. **Verification:** If an authorized host later acts, independent evidence must distinguish a request from a confirmed effect.
+1. **Goal:** A human specifies a desired outcome and limits; subordinate analytical missions need not be hand-written.
+2. **World state:** Bounded observations, hypotheses, and contradictions retain their declared origin and uncertainty.
+3. **Strategy:** Local software generates and ranks candidate missions for registered analytical capabilities, labeling predictions as simulations.
+4. **Coordination:** A durable, recipient-specific local mailbox carries assignments, acknowledgments, and replies. Reports stay unverified; newly operator-admitted observations trigger replanning.
+5. **Continuation:** An opt-in capsule can produce a permitted software-agent-state record for a distinct instance, subject to consent and integrity checks. It does not start that instance.
+6. **Control:** Explicit pause, attempt ceilings, independent outcome confirmation, and separate host authority apply. A planned or reported effect is never automatically a verified result.
 
 Governing distinctions:
 
@@ -24,9 +26,9 @@ Governing distinctions:
 - Simulation is not observation.
 - A request sent is not an effect confirmed.
 
-The Director may evaluate or recommend. **An evaluation cannot mint credentials, approve itself, spend money, access private material, or command another system merely by claiming priority or intelligence.**
+The Director may autonomously **propose and route analytical missions inside an explicitly started local research loop**. **It cannot mint credentials, approve itself, execute shell commands, spend money, access private material, launch agents, or command another system merely by claiming priority or intelligence.**
 
-The Director-specific [project charter](docs/director/CHARTER.md) gives the design boundaries. The [source lineage map](docs/director/LINEAGE_AND_SCOPE.md) explains what the import does and does not inherit; the [portfolio admission register](docs/director/PORTFOLIO_ADMISSION.md) separates reusable ideas from approved code.
+The Director-specific [project charter](docs/director/CHARTER.md) gives the design boundaries. The [34-episode capability audit](docs/director/EPISODE_CAPABILITY_AUDIT.md) and [research-to-software mapping](docs/director/SCREEN_FUNCTION_TO_SOFTWARE.md) record the source-grounded functional analysis and technical limits, without adopting fictional powers or branding in this README. The [source lineage map](docs/director/LINEAGE_AND_SCOPE.md) explains what the import does and does not inherit; the [portfolio admission register](docs/director/PORTFOLIO_ADMISSION.md) separates reusable ideas from approved code.
 
 ## What is implemented today
 
@@ -34,6 +36,13 @@ This repository was initialized from the exact Git history of [God Brain](https:
 
 | Source | Tested capability in its original scope | What it does **not** establish |
 | --- | --- | --- |
+| [Director world state](runtime/director/world_state.py) | Versioned typed evidence, provenance claims, conflict preservation, restartable snapshots | Independent verification of evidence sources or a sensor connected to reality |
+| [Director strategy generator](runtime/director/strategy.py) | Deterministic generation of bounded analytical missions from a high-level goal, a capability catalog, and observations | Future knowledge, causal optimization, a pretrained AI, or worker execution |
+| [Director mission graph](runtime/director/mission_graph.py) | Independent DAG scheduling reference with shared resource capacities, deadlines, and cancellation cascade recommendations | **Not yet wired into the durable coordinator**, no actual worker/resource scheduler |
+| [Director coordinator](runtime/director/coordinator.py) | Explicit local `tick()` producing missions, relaying reports, tracking evidence and outcome confirmation across restart | Self-running AGI, an external effect runner, verified remote identities, or automatic achievement |
+| [Director messenger](runtime/director/messenger.py) | Persistent local recipient-specific SQLite messages, acknowledgement, correlation and replies | Authentication, secure cross-host transport, or a worker actually performing a task |
+| [Director stop policy](runtime/director/stop_policy.py) | Operator pause, bounded attempts, unresolved or exhausted states, and guarded success claims | Independently proven success or host authority |
+| [Software-agent state capsules](runtime/director/agent_state.py) | Explicitly scoped, integrity-checked local data export/restore into new state records with durable replay protection | Human consciousness transfer, process startup, author authentication, or subjective identity continuity |
 | [Director decision kernel](runtime/director/decision.py) | Offline deterministic policy evaluation of a mission, candidate plans, and declared evidence; explicit admissible/rejected/abstain receipt | Authenticated provenance, human approval, live agent orchestration, or any executed effect |
 | [Director dossiers](runtime/director/dossier.py) | Versioned, private, canonical full-input snapshots with content hashes and deterministic advisory replay | Signed decisions, evidence truth, source/clock authentication, or permission to act |
 | [Director local custody](runtime/director/custody.py) | Opt-in, bounded SQLite storage with local hash-chain consistency checks and restart tests | Immutable evidence against a privileged writer, authenticated source identity, or encrypted records |
@@ -46,11 +55,23 @@ This repository was initialized from the exact Git history of [God Brain](https:
 
 The inherited [CURRENT.md](CURRENT.md), [WARDEN.md](WARDEN.md), [repository map](docs/REPOSITORY_MAP.md), historical qualification records, and HC/God Brain names describe their **original lineage**. Their former roles or permissions are **not** Director governance, identity, or deployment evidence. The history is preserved intentionally; selective adaptation will follow review.
 
-**Current claim ceiling:** A source-imported research foundation, deterministic advisory evaluation, complete-input private dossiers, opt-in **same-host** local storage and task coordination, and a deny-only authorization reference. There is no qualified autonomous Director service, live multi-host coordinator, authenticated respondent, or protected-effect deployment.
+**Current claim ceiling:** A source-imported foundation and a bounded, opt-in **same-host analytical coordination prototype**: it can construct missions from registered goals/capabilities, persist and route messages, read declared feedback, revise analytic priorities, and preview or restore software-agent data records. It is **not self-running**, does not start workers or models, cannot authenticate sources, and has no qualified remote Director service, live multi-host coordinator, human-mind transfer, or protected-effect deployment.
 
 ## How it works today
 
-The Director currently runs as an **importable Python reference implementation**, not a background service. A caller supplies the mission, possible actions, declared evidence, and evaluation time. The code returns an advisory recommendation or `ABSTAIN`, with the reasons each proposal passed or failed. It makes no API calls, starts no agents, and performs no external actions.
+The Director runs as an **importable Python reference implementation**, not a background service. Its newer loop differs from the original evaluator: a caller defines a **high-level goal and registered analytical capabilities**, then calls `DirectorCoordinator.tick()` to generate and route candidate missions. A separate local software worker (if one is deliberately provided) may poll its mailbox, acknowledge an assignment, and send a reply. The coordinator records that reply as an **unverified report**; only a distinct, operator-reviewed observation can establish a new world-state fact or claim completion. No API calls, agents, listeners, or external actions start automatically.
+
+Run the harmless local cycle from the repository root:
+
+~~~bash
+python3 -m examples.director_local_cycle
+~~~
+
+The example creates temporary local databases, demonstrates a generated assignment to a **simulated** worker, an acknowledgement and reply, and separate operator confirmation of a sample metric. It closes and removes its test databases. It is a protocol demonstration, not a live AI or a claim that the assignment changed anything outside the program.
+
+The opt-in `export_agent_state()` / `restore_agent_state()` API separately prepares and restores **selected software state**, with consent, bounded memory, a target domain, a new instance identifier, checksum verification, and persistent anti-replay checks. It returns data; it neither launches the restored software agent nor migrates human consciousness. The [research mapping](docs/director/SCREEN_FUNCTION_TO_SOFTWARE.md) tracks which additional capabilities still need building.
+
+The original v0.1 decision kernel is also available. It accepts fully caller-supplied candidate actions and evaluates them **as advice only**, independently of the newer strategic loop.
 
 For example, run this Python code from the repository root:
 
@@ -80,7 +101,7 @@ print(dossier["decision"]["status"], dossier["decision"]["recommended_proposal_i
 # RECOMMENDATION_ONLY offline-review
 ~~~
 
-The evidence origin in that example is a **caller-supplied claim**, not independently verified. `build_dossier()` returns the full private input-bound record in memory. You can explicitly serialize it, persist it with the opt-in local custody store, or submit its digest to the task ledger. None of those steps authorizes or executes the recommended action.
+The evidence origin in that legacy evaluator example is a **caller-supplied claim**, not independently verified. `build_dossier()` returns the full private input-bound record in memory. You can explicitly serialize it, persist it with the opt-in local custody store, or submit its digest to the task ledger. None of those steps authorizes or executes the recommended action.
 
 ## First Director-specific function
 
@@ -111,6 +132,14 @@ python3 -m unittest -q \
   tests.test_director_task_store \
   tests.test_director_authority \
   tests.test_director_local_foundations
+python3 -m unittest -q \
+  tests.test_director_world_state \
+  tests.test_director_strategy \
+  tests.test_director_mission_graph \
+  tests.test_director_messenger \
+  tests.test_director_stop_policy \
+  tests.test_director_coordinator \
+  tests.test_director_agent_state
 python3 tools/validate_hc_architecture.py --root .
 python3 -m unittest -q \
   runtime.cognitive_core.test_cognitive_loop \
@@ -134,16 +163,19 @@ Passing those checks validates only the behaviors exercised, not the proposed Di
 
 ## Near-term build direction
 
-1. Expand the **advisory** dossier schema beyond the current evaluator inputs to include explicit rival explanations, uncertainty, unresolved risks, falsifiers, and operator feedback—without allowing model-written text to become authority.
-2. Qualify custody against trusted-path admission, data retention, privacy, backup/recovery, and any genuinely independent source attestation. Local hashes alone do not solve these.
-3. Design separately authenticated host ownership, revocation, replay defenses, and effect reconciliation before any future multi-host service or external effect. No protected action is authorized or activated by this reference.
+1. **Interdependent missions:** Connect the now-tested standalone dependency/resource graph to the coordinator's durable assignments and cooperative cancellation messages; add graph-versioned replanning and deadline delivery. A graph library alone is not a live scheduler.
+2. **Director dialogue:** Support genuine, bounded two-way discussion with specialized software agents and an operator, while establishing and verifying which local system is allowed to speak as the coordinator. Current local sender IDs are only claims.
+3. **State-transfer qualification:** Destination preflight, explicit loss/omission manifest, record-only dry-run, source/destination consent, and later crash-recoverable activation with host resource limits. A restored data record is not a running intelligence.
+4. **Cognition and grounding:** Explore grounded scenario models, rival hypotheses, role-scoped knowledge updates, model revision, and local no-cost inference only when actually available. Existing deterministic components are **not** a pretrained general intelligence or a consciousness substrate.
+5. **Control and recovery:** Independent evidence/source authentication, information minimization, safe coordinator backup, rollback/revocation, and hostile-state review **before** any remote or effectful operation. No protected action is authorized by a reference test.
 
-The first Director-specific milestone is a **defensible recommendation with a clear reason to abstain**, not an autonomous general-intelligence service.
+This milestone is **a tested analytical coordination skeleton and software-state capsule**, not a finished general-intelligence service or a real-world consciousness-transfer device. The [research-to-software map](docs/director/SCREEN_FUNCTION_TO_SOFTWARE.md) records both implemented mechanisms and known omissions.
 
 ## Boundaries and cost
 
 - **Absolute incremental budget: $0.** No Vercel, billing enrollment, card requirement, paid model API, or paid hosting fallback. Favor local Python and free repository checks.
 - Preserve human consent and privacy. Inputs and model outputs are **not** credentials, authenticated source identity, or proof of external agency.
+- Stores and opt-in state capsules contain plaintext local data. Selected memory summaries may include secrets even if there is no explicit credentials field; **redact before export**. Capsule checksums are not signatures, and restartable message logs are not a trusted remote transport.
 - No protected effects without an independently enforced host authority boundary; no autonomous deployment or user-data ingestion merely because a component can propose it.
 - Treat artificial life and nonbiological consciousness as open questions, but generated text or surprising behavior is not evidence of origin or identity.
 

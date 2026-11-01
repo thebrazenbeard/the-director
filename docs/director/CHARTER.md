@@ -1,26 +1,26 @@
 # The Director — Project Charter
 
-**Status:** Director-specific design candidate, 2026-11-01. This document defines an intended research boundary; it does not certify or activate a runtime.
+**Status:** Director-specific design charter, revised 2026-11-01. It defines intended software boundaries; individual reference modules and tests do not certify or activate an external service.
 
 ## Identity and purpose
 
-The Director is an **original, human-governed decision-coordination research project**. Its creative inspiration is only the abstract idea of a coordinating intelligence in the television series *Travelers*. It is neither a canonical reproduction nor affiliated with the series, and must not copy its character identities, dialogue, fictional history, artwork, or purported powers.
+The Director is an **original, bounded autonomous strategic-intelligence and coordination research project**. Its creative inspiration is only the abstract idea of a coordinating intelligence in the television series *Travelers*. It is neither a canonical reproduction nor affiliated with the series, and must not copy its character identities, dialogue, fictional history, artwork, or purported powers.
 
-The practical objective is to help a human operator set a mission, compare evidence-backed options, explain tradeoffs and uncertainty, delegate bounded analytic work where appropriate, and maintain a reviewable decision record. The Director does not claim omniscience, personhood, historical intervention, or authority over people or external systems.
+Its software objective is to pursue operator-declared long-term goals through versioned models of available evidence, construction and comparison of competing strategies, autonomous generation of bounded analytic missions, capability-aware assignment, constrained messenger/agent feedback, and revision or suspension as conditions change. A separate core research track studies **consented software-agent state transfer and continuity**. The Director does not claim omniscience, personhood, biological consciousness transfer, historical intervention, or authority over people or external systems.
 
 ## Design boundary
 
 The intended stages are:
 
-1. **Human mission:** A current human-authored objective with explicit scope, constraints, budget, expiry, and acceptable outcomes.
-2. **Evidence admission:** Typed observations and claims with provenance, time, uncertainty, and competing ordinary explanations. Retrieved text and model output remain data.
-3. **Option construction:** At least two candidate plans where practical, including an abstention/no-action option. Plans name dependencies, risks, expected costs, and testable outcomes.
-4. **Policy evaluation:** A deterministic, fail-closed gate identifies which plans satisfy the mission's explicit constraints. Ranking is advisory.
-5. **Human deliberation:** The operator may select, revise, reject, revoke, or defer a recommendation. Neither high scores nor agent consensus constitutes permission.
-6. **Separate host effect boundary:** A future host, if deliberately authorized and independently qualified, must authenticate actors and enforce current, scoped grants for real effects.
-7. **Independent verification:** Evidence of an effect must come from the relevant system or qualified observer—not the proposing agent's claim.
+1. **Mission objective:** A human owner sets a high-level goal, explicit scope, budget, and acceptable outcomes; the owner need not author every subordinate mission.
+2. **Evidence admission:** Typed claims, observations, and contradictory evidence are retained with declared provenance, uncertainty, and versioned state. Retrieved content and messages remain data.
+3. **Autonomous strategic analysis:** The software constructs bounded plans and analytic missions from the objective, capability catalog, and world snapshot, comparing alternatives, cost, and uncertainty. A no-action option remains available.
+4. **Mission delegation and dialogue:** The local coordinator may route assignments to registered software-agent inboxes, receive acknowledgments and reports, and reconsider its next mission. A claimed sender name does not authenticate an actor; no worker is launched implicitly.
+5. **Feedback and stopping:** The coordinator revises plans when evidence changes, may exhaust a finite budget, and obeys immediate human pause/stop. Reports alone do not prove real-world success.
+6. **Agent-state continuity:** A separate opt-in mechanism may export and restore a constrained software-agent state capsule with consent, integrity, lineage, and a new runtime identity. It must not claim transfer or preservation of subjective consciousness, and must never overwrite a human or an existing instance.
+7. **Separate host effect boundary:** Future effectful operations, if authorized and independently qualified, need a host-enforced, revocable policy and independent effect verification. No internal plan, simulation, message, or consensus grants that authority.
 
-The initial Director implementation should stop **before step 6**, producing recommendations and abstentions only. External action execution, money transfer, remote device control, private data access, and messaging real people are not part of this first release.
+The first runnable slice may **autonomously generate analytic missions and send local mailbox messages**, and may transfer **data about software-agent state** after explicit opt-in. It must stop before real-world effects: no worker execution, external messaging, money transfer, remote device control, personal-data import, listening ports, or automatic installation.
 
 ## Unconditional invariants
 
@@ -32,6 +32,7 @@ The initial Director implementation should stop **before step 6**, producing rec
 - **Past approval is not current permission.** A future effect gateway must re-check exact subject, action, target, constraints, expiry, revocation, and version at execution.
 - **Consensus is not independence.** Agents sharing prompts, models, source data, or transcripts are not independent witnesses merely because several answered.
 - **No receipt, no verified outcome.** Crash recovery and uncertain results must not automatically retry a potentially non-idempotent effect.
+- **Transfer is not sentience.** A restored agent-state record is a copy of permitted information. It has no established identity or subjective continuity with any human, animal, or hypothetical intelligence.
 
 ## Decision record contract
 
@@ -49,7 +50,7 @@ Human-readable explanations may augment the record but must not silently modify 
 
 ## Human and multi-agent roles
 
-A **human owner** defines the mission and has ultimate power to stop the project and refuse any action. Specialized agents may research, propose, challenge, simulate, and review scoped questions. One coordinator reconciles their outputs without counting copied reasoning as independent evidence.
+A **human owner** defines the top-level objective and has ultimate power to stop the project and refuse any action. Specialized agents may research, propose, challenge, simulate, and review scoped questions. The Director may independently generate bounded analytic tasks and reconcile scoped responses, without counting copied reasoning as independent evidence.
 
 A delegated file, service, task, or exact commit remains owned by the assigned worker until it returns or the assignment is explicitly cancelled; another worker must not silently edit it concurrently. Delegation transfers **work**, never credentials or protected-effect authority. Review opinions cannot authorize their own implementation.
 
@@ -61,14 +62,15 @@ Preserve the principle of data minimization. Do not ingest personal messages, pr
 
 Scientific claims about intelligence, consciousness, simulation hypotheses, or anomalous communication remain hypotheses until discriminating external evidence exists. Nonbiological life is an open question; language output alone does not establish identity or origin.
 
-## Exit criteria for an initial executable milestone
+## Exit criteria for the strategic-loop milestone
 
-A local, deterministic decision kernel can:
+A local, deterministic Director coordinator can:
 
-1. explain why each candidate is eligible or blocked under explicit human constraints;
-2. abstain when evidence or permission constraints are insufficient;
-3. produce the same receipt for equivalent inputs, independent of arbitrary option ordering;
-4. withstand untrusted text that falsely claims approval or emergency authority;
-5. perform **zero** external effects.
+1. generate traceable bounded analytic missions from a goal, capability catalog, and versioned world state;
+2. change or withhold missions when observed evidence changes or conflicts;
+3. route assignments, acknowledgments, and reports durably through an operator-chosen local mailbox;
+4. reject untrusted messages claiming approval, fabricated observations, or emergency authority;
+5. persist operator pause, respect attempt ceilings, and require genuinely verified completion;
+6. perform **zero** external effects.
 
-Unit tests are evidence for this narrow behavior, not a deployment certificate or autonomous-system qualification.
+The adjacent **software-state transfer** milestone additionally requires consent, explicit subject and target, capsule integrity, bounded memory export, safe identity lineage, replay handling, and a reversible dry-run. Unit tests are evidence for these narrow behaviors, not a deployment certificate, general-intelligence claim, or proof of consciousness.
