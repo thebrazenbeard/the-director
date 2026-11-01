@@ -1,0 +1,14 @@
+# Generated Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Local credentials and writable state; never commit real secrets or transcripts.
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.sqlite3-*
+*.sqlite
+*.sqlite-*
