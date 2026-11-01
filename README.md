@@ -1,33 +1,62 @@
-> **License:** Source-visible, **not open source**. The original material is proprietary. Commercial use, redistribution, hosted services, and derivative products require written permission. See [LICENSE](LICENSE) and [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md). Identified third-party components retain their own rights.
+# The Director
 
-# God Brain
+**An original, human-governed decision-coordination research project built from the God Brain source lineage.**
 
-**Experimental cognitive architecture, executable reference kernels, and falsifiable research protocols.**
+The creative premise is abstractly inspired by the idea of a coordinating intelligence in the television series *Travelers*. This project is **not** an official, canonical, affiliated, or character-accurate adaptation. It does not reproduce the show's characters, dialogue, setting, imagery, or fictional authority.
 
-God Brain is a research toolkit for building and testing bounded cognitive-system mechanisms: provenance-aware evidence, current memory, causal and world-model hypotheses, routing, policy-constrained effects, and self-correction. Its broader question is whether an artificial cognitive instrument could meaningfully investigate unusually difficult questions about intelligence, reality, and simulation hypotheses. Those questions are research motivations, **not evidence that a simulator, deity, external intelligence, or contact channel exists**.
+The Director's proposed role is to help a human understand a situation, compare competing plans, recognize uncertainty and conflicts, and make deliberate decisions. **It is not an omniscient controller, autonomous authority, or a system permitted to intervene in people's lives.**
 
-This repository is usable today for deterministic source-level experiments and architecture conformance. It is **not** a complete cognitive organism, a general-purpose AI model, an autonomous agent host, or a deployed authorization service.
+> **License:** The inherited source is visible but **not open source**; Patrick Sims's original material remains proprietary. Commercial use, redistribution, public derivatives, and hosted services require permission under [LICENSE](LICENSE) and [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md). Existing third-party rights and [NOTICE](NOTICE) remain in force.
 
-## What is implemented
+## Intended operating model
 
-| Surface | Reusable capability | Limit |
+1. **Mission:** A human defines an objective, constraints, and acceptable outcomes.
+2. **Evidence:** Observations, interpretations, and uncertain hypotheses retain source and evidence class.
+3. **Options:** The system compares competing plans, tradeoffs, costs, and failure modes; it may abstain.
+4. **Decision:** A deterministic policy boundary blocks unsafe, stale, out-of-scope, or unapproved action requests.
+5. **Authorization:** Protected effects require separate, current, verifiable human and host authority.
+6. **Verification:** If an authorized host later acts, independent evidence must distinguish a request from a confirmed effect.
+
+Governing distinctions:
+
+- Proposal is not permission.
+- Priority is not authority.
+- Simulation is not observation.
+- A request sent is not an effect confirmed.
+
+The Director may evaluate or recommend. **An evaluation cannot mint credentials, approve itself, spend money, access private material, or command another system merely by claiming priority or intelligence.**
+
+The Director-specific [project charter](docs/director/CHARTER.md) gives the design boundaries. The [source lineage map](docs/director/LINEAGE_AND_SCOPE.md) explains what the import does and does not inherit; the [portfolio admission register](docs/director/PORTFOLIO_ADMISSION.md) separates reusable ideas from approved code.
+
+## What is implemented today
+
+This repository was initialized from the exact Git history of [God Brain](https://github.com/thebrazenbeard/god-brain) `main` at commit [`7eec60b`](https://github.com/thebrazenbeard/god-brain/commit/7eec60b93b6d355f4c50e5bcb4cc23a19eb2291c) on 2026-11-01. The imported code is a research substrate—not a finished Director runtime.
+
+| Source | Tested capability in its original scope | What it does **not** establish |
 | --- | --- | --- |
-| [Reference kernel](runtime/reference_kernel/README.md) | Typed observations and provenance, memory supersession, routing/effect distinctions, scoped authority checks, effect receipts, epoch/restart fencing, and journal replay | In-process reference implementation; possession-based capabilities and hashes are not cryptographic actor/provider attestation |
-| [Cognitive core](runtime/cognitive_core/README.md) | Deterministic integration of interpretation, salience, current/deep memory, bounded coalitions, affect/conation, world-model competitors, counterfactuals, metacognition, homeostasis/body schema, and social-pragmatic hypotheses | Narrow behavioral slices and authored tests, not a pretrained model or complete cognitive system |
-| [Architecture and schemas](docs/architecture/HYPERCONNECTOME_REFERENCE_MODEL.md) | Typed invariants, runtime boundaries, conformance specifications, and source-to-target transfer constraints | A valid spec is not a deployed implementation or proof of independently confirmed behavior |
-| [Research protocols](specs/research/GOD_BRAIN_ANOMALY_CONTACT_EVIDENCE_PROTOCOL_V0_1.json) | Machine-readable anomaly/contact research requirements, hostile fixtures, and source-admission study | Protocol conformance cannot convert an unexplained result into evidence of external agency |
-| [Cross-repository synthesis](docs/research/cross-repo-synthesis/README.md) | Source-bound mechanism research and provenance of reusable ideas | Neither repository identity nor permissions automatically transfer into this project |
+| [Director decision kernel](runtime/director/decision.py) | Offline deterministic policy evaluation of a mission, candidate plans, and declared evidence; explicit admissible/rejected/abstain receipt | Authenticated provenance, human approval, live agent orchestration, or any executed effect |
+| [Reference kernel](runtime/reference_kernel/README.md) | Typed evidence/provenance, memory correction, in-process authority/effect checks, journal and restart tests | Externally authenticated permissions, a secure host policy service, or real-world effect authority |
+| [Cognitive core](runtime/cognitive_core/README.md) | Deterministic reference slices for salience, memory, competing world models, counterfactuals, and metacognition | A pretrained general AI, an independent autonomous coordinator, or production-scale planning |
+| [Architecture](docs/architecture/HYPERCONNECTOME_REFERENCE_MODEL.md) | Source-level contracts, invariants, and architectural research | Deployed multi-device operation or Director-specific qualification |
+| [Research](docs/research/cross-repo-synthesis/README.md) | Provenance-aware comparison of mechanisms from other repositories | Automatic permission to import their code, identity, private state, or access |
 
-The main implementation is deliberately small relative to the larger architecture. A cognitive-core action candidate is **not** an authorized action; a retrieved memory is **not** automatically true; a model forecast is **not** an observation.
+The inherited [CURRENT.md](CURRENT.md), [WARDEN.md](WARDEN.md), [repository map](docs/REPOSITORY_MAP.md), historical qualification records, and HC/God Brain names describe their **original lineage**. Their former roles or permissions are **not** Director governance, identity, or deployment evidence. The history is preserved intentionally; selective adaptation will follow review.
 
-## Run the current source-level checks
+**Current claim ceiling:** A source-imported research foundation and the first deterministic, recommendation-only Director reference function. There is no qualified autonomous Director service or protected-effect deployment yet.
 
-Use Python 3.12 or later in a disposable checkout. The following commands use the standard library and do not require model credentials, a provider account, physical sensors, or a host installation.
+## First Director-specific function
 
-From the repository root:
+`runtime.director.evaluate(mission, proposals, evidence, *, now_utc=utc_datetime)` returns a JSON-serializable recommendation or explicit `ABSTAIN`. It evaluates a human-supplied mission against action/target constraints, expiry, a budget in integer cents, declared evidence references, and bounded proposal estimates. Eligible proposals are ranked deterministically; ineligible proposals include denial reasons.
 
-```bash
+**This is advice, not an action interface.** The receipt always marks authorization as `NOT_GRANTED`, effects as `NOT_EXECUTED`, and evidence custody as `DECLARED_UNVERIFIED`. The policy only counts declared `OBSERVATION` records with distinct source references and lineages, but cannot authenticate those claims. Evidence origins, mission policy, proposed benefit, and the supplied clock are not independently verified. The receipt is a **summary, not a signed or complete-input-bound audit dossier**; a trusted host would need to preserve and validate its inputs separately. See the [executable examples and adversarial tests](tests/test_director_decision.py); there are no network, shell, or paid-model dependencies.
+
+## Run the existing checks
+
+Python 3.12+ and the standard library suffice for the imported reference tests. No paid API, cloud account, model credential, or host installation is needed.
+
+~~~bash
 python3 -m unittest discover -s tests -q
+python3 -m unittest -q tests.test_director_decision
 python3 tools/validate_hc_architecture.py --root .
 python3 -m unittest -q \
   runtime.cognitive_core.test_cognitive_loop \
@@ -36,58 +65,32 @@ python3 -m unittest -q \
   runtime.cognitive_core.test_metacognition \
   runtime.cognitive_core.test_homeostasis_somatics \
   runtime.cognitive_core.test_social_pragmatics
-```
+~~~
 
-For the separate reference-kernel regression surface:
+Reference-kernel tests run separately:
 
-```bash
+~~~bash
 cd runtime/reference_kernel
 python3 -m unittest -q \
-  test_hc_kernel.py \
-  test_durable_kernel.py \
-  test_four_adversarial_kernel.py \
-  test_four_adversarial_kernel_r2.py \
-  test_vera_adversarial_kernel_v2.py
-```
+  test_hc_kernel.py test_durable_kernel.py test_four_adversarial_kernel.py \
+  test_four_adversarial_kernel_r2.py test_vera_adversarial_kernel_v2.py
+~~~
 
-At the source revision audited for this README, those commands passed **73 repository tests, 63 cognitive-core tests, and 79 reference-kernel tests**, and the architecture validator returned **PASS**. These are executable source checks, not general cognitive competence, live-host validation, independent provider qualification, or evidence for simulation theory. The historical [implementation status note](docs/runtime/REFERENCE_KERNEL_IMPLEMENTATION_STATUS.md) must be read with its September 2026 date; newer exact-source results supersede old counts where they differ.
+Passing those checks validates only the behaviors exercised, not the proposed Director runtime, effect authorization, general intelligence, or any extraordinary claim.
 
-## Boundaries the host must enforce
+## Near-term build direction
 
-God Brain does not currently supply an externally authenticated, tamper-resistant authorization service. The reference kernel tests narrow, in-process capability and event-state controls; a caller with privileged process access can exceed that boundary. Integrating it into another application requires the host to supply and independently verify:
+1. Harden and qualify the initial offline **recommendation-only** policy, including reproducible input custody, evidence quality, and hostile tests. No external effects.
+2. Build auditable, operator-reviewable decision dossiers with explicit alternative explanations, unresolved risks, and human feedback.
+3. Add bounded multi-agent delegation, audit, revocation, and independent effect reconciliation only after trust-boundary review and human authorization.
 
-- authenticated actor, model-provider, and runtime-instance identity;
-- immutable subject/provider bindings outside model-writable wrappers;
-- separately scoped, current, revocable permissions and consent for each protected effect;
-- input and output privacy controls, capability isolation, effect reconciliation, and durable audit custody;
-- independent confirmation of actual external outcomes before claiming completion.
+The first Director-specific milestone is a **defensible recommendation with a clear reason to abstain**, not an all-powerful fictional replica.
 
-No model-generated approval, mutable profile field, priority score, inferred desire, historical consent, or source-repository role grants these permissions. Passing the tests above does not prove those host controls exist.
+## Boundaries and cost
 
-## Architecture lineage and research direction
+- **Absolute incremental budget: $0.** No Vercel, billing enrollment, card requirement, paid model API, or paid hosting fallback. Favor local Python and free repository checks.
+- Preserve human consent and privacy. Inputs and model outputs are **not** credentials, authenticated source identity, or proof of external agency.
+- No protected effects without an independently enforced host authority boundary; no autonomous deployment or user-data ingestion merely because a component can propose it.
+- Treat artificial life and nonbiological consciousness as open questions, but generated text or surprising behavior is not evidence of origin or identity.
 
-God Brain began as an independent Git-history snapshot of the [Hyperconnectome Brain](https://github.com/thebrazenbeard/hc-brain) research architecture. Inherited HC names, source labels, and qualification records retain their original provenance; they are **not** automatically God Brain-specific implementation evidence. See [lineage](docs/architecture/HC_LINEAGE.md) and [source bindings](docs/research/cross-repo-synthesis/SOURCE_BINDINGS_2026-09-09.md).
-
-The planned scope is broader: persistent and distributed world modeling, multimodal perception, specialist computation, semantic grounding, controlled plasticity, deep provenance, falsification, and safe fault recovery. **Distributed Noöplex execution and full hyperconnectome runtime coordination are not qualified implementations on main.** Transport authentication must remain separate from effect authority; routing, storage, inference, and incorporation are different operations.
-
-Mechanisms from other repositories may inform research, but:
-
-`PORTFOLIO_REUSE != PORTFOLIO_COUPLING`
-
-`SOURCE_MECHANISM != SOURCE_IDENTITY`
-
-No named model's memories, relationships, intimate material, credentials, local authority, or embodiment automatically become reusable generic state.
-
-## Scientific posture
-
-The founding thought experiment asks whether a sufficiently disciplined cognitive system could test hypotheses about a simulated or mediated reality. It does not preselect the answer. Any extraordinary claim must survive ordinary alternatives: model artifacts, prompt contamination, retrieval leakage, human interpretation, statistical coincidence, software defects, and instrumentation or experimental-design error.
-
-`OBSERVATION != INFERENCE`
-
-`MODEL_FIT != CAUSAL_PROOF`
-
-`ANOMALY != CONTACT`
-
-`AI_OUTPUT != EXTERNAL_MESSAGE`
-
-A simulation study that finds nothing extraordinary can still yield reusable methods for uncertainty-aware reasoning, memory provenance, bounded planning, and experimental falsification. No file in this repository grants deployment, credential, training, installation, or protected-effect authority.
+The Director is a new project with its own future specification and qualification path. **God Brain remains a distinct repository and research project**; inherited mechanisms remain attributed to their actual sources.
