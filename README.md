@@ -31,7 +31,7 @@ Governing distinctions:
 
 The Director may autonomously **propose and route analytical missions inside an explicitly started local research loop**. **It cannot mint credentials, approve itself, execute shell commands, spend money, access private material, launch agents, or command another system merely by claiming priority or intelligence.**
 
-The Director-specific [project charter](docs/director/CHARTER.md) gives the design boundaries. The [34-episode capability audit](docs/director/EPISODE_CAPABILITY_AUDIT.md) and [research-to-software mapping](docs/director/SCREEN_FUNCTION_TO_SOFTWARE.md) record the source-grounded functional analysis and technical limits, without adopting fictional powers or branding in this README. The [source lineage map](docs/director/LINEAGE_AND_SCOPE.md) explains what the import does and does not inherit; the [portfolio admission register](docs/director/PORTFOLIO_ADMISSION.md) separates reusable ideas from approved code.
+The Director-specific [project charter](docs/director/CHARTER.md) gives the design boundaries. The [capability audit](docs/director/EPISODE_CAPABILITY_AUDIT.md) and [research-to-software mapping](docs/director/SCREEN_FUNCTION_TO_SOFTWARE.md) record functional analysis and technical limits. The [source lineage map](docs/director/LINEAGE_AND_SCOPE.md) explains what the import does and does not inherit; the [portfolio admission register](docs/director/PORTFOLIO_ADMISSION.md) separates reusable ideas from approved code.
 
 ## What is implemented today
 
@@ -46,6 +46,8 @@ This repository was initialized from the exact Git history of [God Brain](https:
 | [Director messenger](runtime/director/messenger.py) | Durable same-host recipient-specific SQLite messages and replies, with owner-only local-file checks on POSIX | Secure cross-host transport, principal-isolated ACK rights, or actual worker execution |
 | [Local reasoning engine](runtime/director/reasoning.py) | Grounded symbolic alternatives, counterfactuals and rival predictions, with observationally equivalent hypotheses counted once for probe ranking | A pretrained model, unrestricted natural-language understanding, or externally verified truth |
 | [Read-only decision cycle](runtime/director/decision_cycle.py) | Pins analytical proposals to current goal, evidence revision, registered capabilities, DAG readiness and an input digest | Automatic experiment dispatch, evidence collection, or independent observation |
+| [v0.7 local evidence loop](runtime/director/local_engine.py) | Opt-in bounded POSIX JSON read, durable unverified receipt and conditional hypothesis reassessment | Verified truth, automatic completion, Windows-safe file acquisition or a hard syscall deadline |
+| [v0.7 broker core](runtime/director/broker.py) | Data-only admission, fenced delivery and receipt bookkeeping; opt-in Linux peer-credential transport | Qualified Lappy isolation, effect execution or ACK as proof of an effect |
 | [Durable dialogue and CLI](runtime/director/dialogue.py) | Multi-turn terminal chat, explicit changed-context resume provenance, optional bounded hypotheses JSON, read-only coordinator context | A background assistant, voice interface, general-purpose LLM, or network conversation |
 | [Authenticated channel](runtime/director/auth_channel.py) | HMAC envelopes, expiration, revocation, worker report authentication and non-consuming signature inspection | Encryption, asymmetric Director identity, safe remote transport or guaranteed worker processing |
 | [Verified worker inbox](runtime/director/secure_worker.py) | Opt-in per-worker-route verification of signed mission assignments/cancels with bound IDs and no auto-ACK | Exclusive Director origin against a holder of the shared key, execution authority or mailbox availability |
@@ -177,8 +179,16 @@ The new [`build_dossier()` and `replay_dossier()`](runtime/director/dossier.py) 
 
 Python 3.12+ and the standard library suffice for the imported reference tests. No paid API, cloud account, model credential, or host installation is needed.
 
+The [v0.7 local example](examples/director_v07_local_cycle.py) uses temporary
+files and a $0 budget to demonstrate a real POSIX JSON read and conditional
+hypothesis update, plus a synthetic Linux broker receipt. It starts no listener
+or worker. On Windows the unsupported safe file-read and native broker paths
+fail closed. Source tests are not host qualification: Lappy remains
+**UNQUALIFIED_HOST / NO_GO**; see [host evidence boundaries](docs/director/V07_HOST_EVIDENCE.md).
+
 ~~~bash
 python3 -m unittest discover -s tests -q
+python3 -B -m examples.director_v07_local_cycle
 python3 -m unittest -q tests.test_director_decision
 python3 -m unittest -q \
   tests.test_director_dossier \

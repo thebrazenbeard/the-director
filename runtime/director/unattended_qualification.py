@@ -16,6 +16,7 @@ clock. It cannot certify that persisted outbound signed intents are unexpired.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from typing import Literal, Protocol, TypedDict
 
 
@@ -142,3 +143,106 @@ def assess_unattended_readiness(
 
 
 __all__ = ["ReadinessBlocker", "UnattendedReadiness", "assess_unattended_readiness"]
+
+
+# Inventory is deliberately incapable of representing a passing security test.
+# Do not add signatures or caller approval flags here: custody and verification
+# need a separately reviewed native host implementation, not JSON assertions.
+HOST_INVENTORY_MAX_BYTES = 4096
+HOST_QUALIFICATION_GAPS = (
+    "WINDOWS_NATIVE_CREDENTIAL_BOUND_BROKER",
+    "DISTINCT_BROKER_WORKER_SIDS",
+    "BROKER_KEY_AND_DATABASE_ACLS",
+    "NAMED_PIPE_PEER_BINDING",
+    "JOB_OBJECT_PROCESS_TREE_CLEANUP",
+    "RESOURCE_AND_RESTART_CAPS",
+    "PAUSE_AND_STOP_CONTROLS",
+    "ONE_INSTANCE_LOCK",
+    "SLEEP_AND_REBOOT_RECOVERY",
+    "RECEIPT_ACK_CRASH_RESTART_MATRIX",
+    "REVOCATION_CRASH_RESTART_MATRIX",
+    "INDEPENDENT_COLLECTION_PRINCIPAL",
+    "TAMPER_RESISTANT_EVIDENCE_CUSTODY",
+    "HOST_BOOT_BINARY_CONFIG_COMMIT_BINDING",
+    "FRESHNESS_AND_INDEPENDENT_VERIFICATION",
+)
+
+
+def _inventory(raw: bytes) -> dict[str, object]:
+    """Accept only bounded, nonidentifying inventory; never accept authority."""
+    if type(raw) is not bytes or not 0 < len(raw) <= HOST_INVENTORY_MAX_BYTES:
+        raise ValueError("invalid inventory")
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("invalid inventory")
+            result[key] = value
+        return result
+
+    def nonfinite(_):
+        raise ValueError("invalid inventory")
+
+    data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
+                      parse_constant=nonfinite)
+    keys = {"schema", "provenance", "platform", "os_build",
+            "logical_processors", "powershell_major", "process_64bit"}
+    if type(data) is not dict or set(data) != keys:
+        raise ValueError("invalid inventory")
+    if (data["schema"] != "director.host-inventory.v1"
+            or data["provenance"] != "REAL_HOST_PROBE"
+            or data["platform"] != "Windows"):
+        raise ValueError("unsupported inventory")
+    for key, maximum in (("os_build", 1000000), ("logical_processors", 65536),
+                         ("powershell_major", 100)):
+        if type(data[key]) is not int or not 1 <= data[key] <= maximum:
+            raise ValueError("invalid inventory")
+    if type(data["process_64bit"]) is not bool:
+        raise ValueError("invalid inventory")
+    return data
+
+
+def assess_host_inventory(raw: bytes | None = None) -> dict[str, object]:
+    """Pure source-level report, NEVER a release, service or execution gate.
+
+    A structurally valid snapshot can still be forged, stale, copied, or from
+    the wrong host/boot/commit. We cannot establish any of these bindings and
+    deliberately never upgrade a snapshot to independently verified evidence.
+    Invalid inputs are not echoed, including exceptions or unknown fields.
+    """
+    inventory = None
+    disposition = "NOT_PROVIDED"
+    if raw is not None:
+        try:
+            inventory = _inventory(raw)
+            disposition = "UNVERIFIED_INVENTORY_ONLY"
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            disposition = "REJECTED_INPUT"
+    return {
+        "schema": "director.host-readiness.v1",
+        "status": "UNQUALIFIED_HOST",
+        "qualified": False,
+        "release_decision": "NO_GO",
+        "effect_authority": "NOT_GRANTED",
+        "effect_status": "NOT_EXECUTED",
+        "inventory_disposition": disposition,
+        "inventory": inventory,
+        "evidence_provenance": {
+            "DOC": "CHECKLIST_ONLY",
+            "SOURCE": "FAIL_CLOSED_RENDERER",
+            "TEST": "NO_HOST_PROOF",
+            "REAL_HOST_PROBE": "UNVERIFIED_SNAPSHOT" if inventory else "NOT_AVAILABLE",
+        },
+        "checks": [{"code": code, "status": "NOT_TESTED", "evidence": "UNPROVEN"}
+                   for code in HOST_QUALIFICATION_GAPS],
+    }
+
+
+def render_host_readiness(raw: bytes | None = None) -> str:
+    """Return bounded JSON with no paths, credentials, or input error text."""
+    return json.dumps(assess_host_inventory(raw), sort_keys=True, indent=2)
+
+
+__all__ += ["HOST_INVENTORY_MAX_BYTES", "HOST_QUALIFICATION_GAPS",
+            "assess_host_inventory", "render_host_readiness"]

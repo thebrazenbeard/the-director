@@ -9,7 +9,11 @@ on:
       - 'examples/director_local_cycle.py'
       - 'examples/director_v05_local_cycle.py'
       - 'examples/director_v06_data_only_cycle.py'
+      - 'examples/director_v07_local_cycle.py'
+      - 'scripts/director-v07-qualify-lappy.ps1'
       - 'docs/director/V06_QUALIFICATION_BOUNDARIES.md'
+      - 'docs/director/V07_HOST_EVIDENCE.md'
+      - 'docs/director/V07_IMPLEMENTATION_PLAN.md'
       - 'README.md'
 
 permissions:
@@ -36,3 +40,5 @@ jobs:
         run: python -B -m examples.director_v05_local_cycle
       - name: Exercise v0.6 data-only readiness and recovery boundaries
         run: python -B -m examples.director_v06_data_only_cycle
+      - name: Exercise v0.7 local-only source boundaries
+        run: python -B -m examples.director_v07_local_cycle
