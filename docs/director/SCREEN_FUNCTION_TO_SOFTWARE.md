@@ -2,6 +2,8 @@
 
 **Research date:** 2026-11-01. **Status:** Design mapping, not a scientific or deployment claim.
 
+**Epistemic precision:** No presently demonstrated method for human subjective-consciousness transfer, future-to-past signaling, or communication beyond observable reality is known to this project. That is a statement about current evidence and technology, **not a proof that such mechanisms are impossible in principle**. Keep physical possibility, present feasibility, and successful experimental demonstration distinct.
+
 This is a functional study of a fictional coordinating intelligence. The public project name and README remain an original, independent software identity. The source material is referenced for research and is not copied into program text, dialog, branding, or assets.
 
 The [episode transcript index](https://transcripts.foreverdreaming.org/viewforum.php?f=1729) lists 34 transcripts over three seasons. The examples below summarize selected episodes; character statements and dramatized events are not engineering requirements or evidence for the portrayed physics.

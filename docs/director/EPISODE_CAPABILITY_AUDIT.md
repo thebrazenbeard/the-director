@@ -73,6 +73,7 @@ The full-file audit was divided by episode to prevent a few famous scenes from m
 1. Fictional host overwrite, covert channels, involuntary transfers, brain manipulation, and internet self-replication are **not implementation requirements**; several are antagonist actions or morally harmful outcomes.
 2. An instruction-bearing message from a claimed `director` sender does not authenticate the source. The S2E05 deception is a counterexample to blind trust.
 3. Software data restoration preserves specified bytes/records, not an unbroken first-person perspective. The philosophical and scientific claims of consciousness transfer remain unverified.
+   **Unverified is not the same as disproven or physically impossible.** The engineering claim is limited to what this code actually does, while broader possibilities remain research hypotheses pending discriminating evidence.
 4. No script, AI text, predicted trajectory, unusual signal, or silent messenger proves a hypothetical external intelligence is speaking. Keep observations, hypotheses, interpretations, and verification separate.
 5. The $0 and owner-consent constraints are absolute: no paid cloud, stealth network access, unsolicited host installation, invasive sensing, or destructive identity replacement.
 

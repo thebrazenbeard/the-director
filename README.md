@@ -6,6 +6,8 @@ The Director is named for its intended function: working toward an operator-decl
 
 Its second core research direction is **continuity and transfer of software-agent state**: an explicitly consented handoff of permitted identity records, selected memory summaries, and goal parameters as a new software-state record. It does not itself launch an instance. This does **not** claim to transfer human consciousness, subjective experience, or biological minds.
 
+The absence of a demonstrated technology for transferring subjective consciousness does not establish that such transfer is impossible in principle. This repository's current claims concern only reproducible software-state operations; other possibilities remain open research questions.
+
 **Autonomous planning is not unrestricted authority.** The Director may produce and coordinate local analytical tasks, but it is not an omniscient controller and may not independently intervene in people's lives, access hosts, obtain permissions, or spend money.
 
 > **License:** The inherited source is visible but **not open source**; Patrick Sims's original material remains proprietary. Commercial use, redistribution, public derivatives, and hosted services require permission under [LICENSE](LICENSE) and [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md). Existing third-party rights and [NOTICE](NOTICE) remain in force.
