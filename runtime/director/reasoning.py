@@ -210,6 +210,12 @@ def _same_prediction(left: object, right: object) -> bool:
     return type(left) is type(right) and left == right
 
 
+def _same_prediction_profile(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
+    """Compare complete observable predictions, independent of hypothesis ID."""
+    return (set(left) == set(right)
+            and all(_same_prediction(left[key], right[key]) for key in left))
+
+
 class LocalReasoner:
     """Deterministic conditional reasoning, not a language model or authority."""
 
@@ -340,10 +346,33 @@ class LocalReasoner:
         reports = self.compare_hypotheses(world_snapshot, hypotheses)
         excluded = sorted(str(row["hypothesis_id"]) for row in reports if row["contradicted"])
         viable = [h for h in parsed if h["hypothesis_id"] not in excluded]
+        # An already OBSERVED metric cannot be probed again by this method.
+        # Two viable hypotheses can differ on such a field (e.g. one omits a
+        # correct prediction), yet make the *same* predictions for every metric
+        # still eligible for measurement. Group those effective profiles so
+        # rephrasing or copying settled fields cannot change probe rankings.
+        # Original IDs remain visible, not silently discarded or merged as
+        # proof that the underlying causal hypotheses are identical.
+        distinct: list[dict[str, object]] = []
+        equivalent_groups: list[list[str]] = []
+        effective_profiles: list[dict[str, object]] = []
+        for hypothesis in viable:
+            effective = {
+                metric: expected for metric, expected in hypothesis["predictions"].items()
+                if facts.get(metric, {}).get("status") != "OBSERVED"
+            }
+            for index, representative in enumerate(effective_profiles):
+                if _same_prediction_profile(effective, representative):
+                    equivalent_groups[index].append(str(hypothesis["hypothesis_id"]))
+                    break
+            else:
+                distinct.append(hypothesis)
+                effective_profiles.append(effective)
+                equivalent_groups.append([str(hypothesis["hypothesis_id"])])
         candidates: dict[str, list[list[str]]] = {}
-        if len(viable) >= 2:
-            for index, left in enumerate(viable):
-                for right in viable[index + 1:]:
+        if len(distinct) >= 2:
+            for index, left in enumerate(distinct):
+                for right in distinct[index + 1:]:
                     for metric in sorted(set(left["predictions"]) & set(right["predictions"])):
                         current = facts.get(metric)
                         if current is not None and current["status"] == "OBSERVED":
@@ -369,8 +398,10 @@ class LocalReasoner:
         return {"world_revision": revision, "status": status,
                 "viable_hypothesis_ids": [str(x["hypothesis_id"]) for x in viable],
                 "excluded_hypothesis_ids": excluded,
+                "observational_equivalence_groups": equivalent_groups,
+                "distinct_prediction_profiles": len(distinct),
                 "observations": observations,
-                "ranking_basis": "COUNT_OF_DISTINGUISHED_RIVAL_PAIRS_NOT_PROBABILITY",
+                "ranking_basis": "COUNT_OF_DISTINCT_UNOBSERVED_PREDICTION_PROFILE_PAIRS_NOT_PROBABILITY",
                 "probability_status": "NOT_INFERRED", "authorization": "NOT_GRANTED",
                 "effect_status": "NOT_EXECUTED",
                 "uncertainty": "HYPOTHESES_AND_OBSERVATIONS_ARE_DECLARED_UNVERIFIED"}

@@ -8,6 +8,8 @@ on:
       - 'tests/test_director_*.py'
       - 'examples/director_local_cycle.py'
       - 'examples/director_v05_local_cycle.py'
+      - 'examples/director_v06_data_only_cycle.py'
+      - 'docs/director/V06_QUALIFICATION_BOUNDARIES.md'
       - 'README.md'
 
 permissions:
@@ -32,3 +34,5 @@ jobs:
         run: python -B -m examples.director_local_cycle
       - name: Exercise signed local coordination and quarantine recovery
         run: python -B -m examples.director_v05_local_cycle
+      - name: Exercise v0.6 data-only readiness and recovery boundaries
+        run: python -B -m examples.director_v06_data_only_cycle

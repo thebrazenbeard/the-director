@@ -70,6 +70,27 @@ class VerifiedWorkerInbox:
         accidentally consume a replay marker through this adapter. The final
         ``verify`` call rechecks the MAC/revocation and consumes one token.
         """
+        raw, _ = self._inspect_parts(message, now_utc=now_utc)
+        admitted = self.channel.verify(raw, expected_recipient=self.worker_id,
+                                       now_utc=now_utc)
+        return self._presentation(admitted, replay_admitted=True)
+
+    def inspect_message(
+        self, message: Mapping[str, object], *, now_utc: int,
+    ) -> dict[str, object]:
+        """Verify a signed command's content without consuming a replay token.
+
+        An inspection is not durable admission. Callers must commit nonce/ID
+        uniqueness with their own protected state before trusting the result.
+        This never acknowledges mailbox delivery or executes a command.
+        """
+        _, inspected = self._inspect_parts(message, now_utc=now_utc)
+        return self._presentation(inspected, replay_admitted=False)
+
+    def _inspect_parts(
+        self, message: Mapping[str, object], *, now_utc: int,
+    ) -> tuple[bytes, dict[str, object]]:
+        """Return bounded signed bytes and checked claims for durable receivers."""
         if not isinstance(message, Mapping):
             raise ValueError("worker message must be a mailbox mapping")
         outer_id = _identifier(message.get("message_id"), "mailbox message_id")
@@ -119,17 +140,18 @@ class VerifiedWorkerInbox:
         if body.get("worker_stopped_verified", False) is not False:
             raise ValueError("signed command cannot assert verified worker cessation")
 
-        admitted = self.channel.verify(raw, expected_recipient=self.worker_id,
-                                       now_utc=now_utc)
+        return raw, checked
+
+    def _presentation(self, checked: Mapping[str, object], *, replay_admitted: bool) -> dict[str, object]:
         return {
-            "message_id": outer_id,
+            "message_id": checked["message_id"],
             "worker_id": self.worker_id,
-            "kind": kind,
-            "body": dict(body),
-            "authenticated_sender_id": admitted["authenticated_sender_id"],
+            "kind": checked["kind"],
+            "body": dict(checked["payload"]["body"]),
+            "authenticated_sender_id": checked["authenticated_sender_id"],
             "sender_authenticated": True,
             "authentication_scope": "WORKER_SCOPED_SHARED_HMAC_KEY",
-            "replay_admitted": True,
+            "replay_admitted": replay_admitted,
             "effect_authority": "NOT_GRANTED",
             "effect_status": "NOT_EXECUTED",
             "worker_action_status": "NOT_EXECUTED",
