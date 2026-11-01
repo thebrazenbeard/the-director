@@ -534,6 +534,8 @@ class DirectorCoordinator:
             raise ValueError("event must be a mapping")
         encoded = _json(dict(event), limit=_MAX_EVENT_BYTES)
         _id(event.get("event_id"), "event_id")
+        if event["event_id"].startswith("local."):
+            raise ValueError("local. event namespace is reserved for atomic local acquisition")
         # Validate full schema and consistency against persisted events before
         # committing; conflicts are never silently promoted to observations.
         with self._transaction() as conn:
@@ -1178,31 +1180,37 @@ class DirectorCoordinator:
         conn = self._connection()
         conn.execute("BEGIN")
         try:
-            config = self._config(conn)
-            world_snapshot = self._world(conn).snapshot()
-            context = self._graph_context(conn)
-            if context is None:
-                ready = None
-                graph_snapshot = None
-            else:
-                ready = [row["mission_id"] for row in context["graph"].ready(
-                    completed=context["completed"], in_progress=context["active"],
-                    failed_or_cancelled=context["invalidated"],
-                    unavailable_resources=context["unavailable"],
-                    now_tick=context["now_tick"],
-                )]
-                graph_snapshot = {
-                    "graph": context["graph"].snapshot(),
-                    "completed": sorted(context["completed"]),
-                    "invalidated": sorted(context["invalidated"]),
-                    "active": sorted(context["active"]),
-                    "unavailable_resources": sorted(context["unavailable"]),
-                    "logical_tick": context["now_tick"],
-                }
-            operator_control = self._operator_control(conn)
-            quarantined = self._recovery_quarantine(conn) is not None
+            return self._assess_decision_cycle_in_transaction(conn, hypotheses=hypotheses)
         finally:
             conn.execute("ROLLBACK")
+
+    def _assess_decision_cycle_in_transaction(self, conn, *, hypotheses=()):
+        """Internal consistent-view seam for opt-in fenced local admission."""
+        if not conn.in_transaction:
+            raise RuntimeError("assessment requires an active transaction")
+        config = self._config(conn)
+        world_snapshot = self._world(conn).snapshot()
+        context = self._graph_context(conn)
+        if context is None:
+            ready = None
+            graph_snapshot = None
+        else:
+            ready = [row["mission_id"] for row in context["graph"].ready(
+                completed=context["completed"], in_progress=context["active"],
+                failed_or_cancelled=context["invalidated"],
+                unavailable_resources=context["unavailable"],
+                now_tick=context["now_tick"],
+            )]
+            graph_snapshot = {
+                "graph": context["graph"].snapshot(),
+                "completed": sorted(context["completed"]),
+                "invalidated": sorted(context["invalidated"]),
+                "active": sorted(context["active"]),
+                "unavailable_resources": sorted(context["unavailable"]),
+                "logical_tick": context["now_tick"],
+            }
+        operator_control = self._operator_control(conn)
+        quarantined = self._recovery_quarantine(conn) is not None
         return _assess_decision_cycle(
             config["goal"], config["capabilities"], world_snapshot, hypotheses,
             graph_ready=ready, graph_snapshot=graph_snapshot,
