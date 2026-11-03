@@ -308,11 +308,23 @@ class AgentStateLedger:
             )
             self._conn.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
-            self._conn.execute("ROLLBACK")
+            self._rollback_if_active()
+            if getattr(exc, "sqlite_errorname", "") not in (
+                "SQLITE_CONSTRAINT_PRIMARYKEY", "SQLITE_CONSTRAINT_UNIQUE"
+            ):
+                raise
             raise ValueError("capsule already restored or target instance already used") from exc
         except BaseException:
-            self._conn.execute("ROLLBACK")
+            self._rollback_if_active()
             raise
+
+    def _rollback_if_active(self) -> None:
+        """Do not replace an original failure after SQLite auto-rollback."""
+        if self._conn.in_transaction:
+            try:
+                self._conn.execute("ROLLBACK")
+            except sqlite3.DatabaseError:
+                pass
 
     def _check_available(self, capsule_id: str, new_instance_id: str) -> None:
         """Read-only collision check; admission must independently recheck."""
