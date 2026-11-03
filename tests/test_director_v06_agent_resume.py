@@ -233,6 +233,42 @@ class RestoredStateResumeTests(unittest.TestCase):
             restored = handoff(restore_agent_state, raw, contender)
             self.assertEqual("NOT_EXECUTED", restored["effects"])
 
+    def test_restore_never_acknowledges_missing_or_modified_receipt(self):
+        raw = capsule()
+        triggers = {
+            "ignored": (
+                "CREATE TRIGGER faulty_insert BEFORE INSERT ON restored_capsules "
+                "BEGIN SELECT RAISE(IGNORE); END"
+            ),
+            "deleted": (
+                "CREATE TRIGGER faulty_insert AFTER INSERT ON restored_capsules "
+                "BEGIN DELETE FROM restored_capsules WHERE capsule_id=NEW.capsule_id; END"
+            ),
+            "mutated": (
+                "CREATE TRIGGER faulty_insert AFTER INSERT ON restored_capsules "
+                "BEGIN UPDATE restored_capsules SET digest='invalid' "
+                "WHERE capsule_id=NEW.capsule_id; END"
+            ),
+        }
+        for failure, statement in triggers.items():
+            with self.subTest(failure=failure):
+                database = Path(self.temp.name) / f"{failure}.sqlite3"
+                with AgentStateLedger(database) as ledger:
+                    ledger._conn.execute(statement)
+                    with self.assertRaisesRegex(ValueError, "restore receipt"):
+                        handoff(restore_agent_state, raw, ledger)
+                    self.assertFalse(ledger._conn.in_transaction)
+                    self.assertEqual(
+                        0, ledger._conn.execute(
+                            "SELECT count(*) FROM restored_capsules"
+                        ).fetchone()[0]
+                    )
+                    ledger._conn.execute("DROP TRIGGER faulty_insert")
+                    restored = handoff(restore_agent_state, raw, ledger)
+                    resumed = handoff(resume_agent_state_restore, raw, ledger)
+                    self.assertEqual(restored, resumed)
+                    self.assertEqual("NOT_EXECUTED", restored["effects"])
+
     def test_cancel_after_resume_does_not_revoke_returned_data(self):
         raw = capsule()
         self._admit_and_drop_response(raw)
