@@ -230,6 +230,21 @@ class DurableWorkerReceiptsTests(unittest.TestCase):
             conn.execute("DROP TRIGGER injected_failure")
         self.assertEqual(self.receipts.accept(command, now_utc=NOW)["state"], "PENDING_REVIEW")
 
+    def test_sqlite_trigger_auto_rollback_preserves_original_failure(self):
+        """A SQLite RAISE(ROLLBACK) must not be masked by redundant cleanup."""
+        command = self.signed()
+        with self.receipts._transaction() as conn:
+            conn.execute("""CREATE TRIGGER auto_rollback BEFORE INSERT ON director_worker_receipts
+                BEGIN SELECT RAISE(ROLLBACK,'original receipt rollback'); END""")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "original receipt rollback"):
+            self.receipts.accept(command, now_utc=NOW)
+        self.assertFalse(self.receipts._connection().in_transaction)
+        self.assertIsNone(self.receipts.receipt("assignment.1"))
+        self.assertEqual(len(self.mailbox.poll("worker_x")), 1)
+        with self.receipts._transaction() as conn:
+            conn.execute("DROP TRIGGER auto_rollback")
+        self.assertEqual(self.receipts.accept(command, now_utc=NOW)["state"], "PENDING_REVIEW")
+
     @unittest.skipUnless(os.name == "posix", "POSIX mode protection")
     def test_existing_public_or_symlink_database_is_rejected(self):
         self.receipts.close()
