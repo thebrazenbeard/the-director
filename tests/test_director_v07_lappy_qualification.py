@@ -84,7 +84,10 @@ class HostInventoryTests(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / "scripts" / "director-v07-qualify-lappy.ps1"
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(script)],
-            capture_output=True, timeout=10, check=False,
+            # Windows PowerShell process startup on a shared CI runner is
+            # separate from the script's own two-second in-process probe bound.
+            # Preserve a finite deadline and fail on timeout; never skip.
+            capture_output=True, timeout=30, check=False,
         )
         # Execution-policy denial is a failure to investigate, not a reason to
         # change host policy or silently skip. Never print potentially private errors.
