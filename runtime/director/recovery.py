@@ -269,7 +269,13 @@ class RecoveryStore:
             yield conn
             conn.execute("COMMIT")
         except BaseException:
-            conn.execute("ROLLBACK")
+            # SQLite RAISE(ROLLBACK) can finish the transaction itself. Never
+            # conceal the original database exception with a cleanup failure.
+            if conn.in_transaction:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.DatabaseError:
+                    pass
             raise
 
     def close(self) -> None:
@@ -329,6 +335,20 @@ class RecoveryStore:
             raise RecoveryIntegrityError("recovered record is malformed") from exc
         return record
 
+    @classmethod
+    def _require_exact_receipt(cls, conn: sqlite3.Connection, kind: str,
+                               record_id: str, expected: dict[str, Any]) -> None:
+        """Reject ignored, deleted, or mutated rows before reporting success."""
+        try:
+            if kind == "checkpoint":
+                actual = cls._read_checkpoint(conn, record_id)
+            else:
+                actual = cls._read_restore(conn, record_id)
+        except (KeyError, RecoveryIntegrityError) as exc:
+            raise RecoveryIntegrityError(f"{kind} receipt missing or corrupt") from exc
+        if actual != expected:
+            raise RecoveryIntegrityError(f"{kind} receipt does not match requested record")
+
     @staticmethod
     def _head_generation(conn: sqlite3.Connection, owner_id: str, target_domain: str) -> int:
         checkpoint = conn.execute("""SELECT COALESCE(MAX(generation),0)
@@ -379,10 +399,14 @@ class RecoveryStore:
                     raise ValueError("recovery checkpoint limit reached")
                 if generation <= self._head_generation(conn, owner_id, target_domain):
                     raise ValueError("checkpoint generation is not newer than local history")
-                conn.execute("""INSERT INTO director_recovery_checkpoints
+                inserted = conn.execute("""INSERT INTO director_recovery_checkpoints
                     (checkpoint_id,owner_id,target_domain,generation,record_json,record_digest)
                     VALUES(?,?,?,?,?,?)""",
                     (checkpoint_id, owner_id, target_domain, generation, encoded, digest))
+                if inserted.rowcount != 1:
+                    raise RecoveryIntegrityError("checkpoint receipt insert was suppressed")
+            self._require_exact_receipt(conn, "checkpoint", checkpoint_id, record)
+        self._require_exact_receipt(self._connection(), "checkpoint", checkpoint_id, record)
         return {"checkpoint_id": checkpoint_id, "owner_id": owner_id,
                 "target_domain": target_domain, "generation": generation,
                 "sha256": digest, "agent_state_included": agent_state is not None,
@@ -458,11 +482,15 @@ class RecoveryStore:
             }
             encoded = _canonical(recovered)
             digest = _digest(encoded)
-            conn.execute("""INSERT INTO director_recovery_restores
+            inserted = conn.execute("""INSERT INTO director_recovery_restores
                 (restore_id,checkpoint_id,owner_id,target_domain,generation,record_json,record_digest)
                 VALUES(?,?,?,?,?,?,?)""",
                 (restore_id, checkpoint_id, snapshot["owner_id"], snapshot["target_domain"],
                  generation, encoded, digest))
+            if inserted.rowcount != 1:
+                raise RecoveryIntegrityError("restore receipt insert was suppressed")
+            self._require_exact_receipt(conn, "restore", restore_id, recovered)
+        self._require_exact_receipt(self._connection(), "restore", restore_id, recovered)
         return json.loads(encoded)
 
     def get_restore(self, restore_id: str) -> dict[str, object]:
