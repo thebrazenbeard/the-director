@@ -9,6 +9,7 @@
       "runtimeArgs": ["dev", "--increase-timeout"],
       "console": "integratedTerminal",
       "skipFiles": ["<node_internals>/**"],
+      // sourceMapRenames helps with the loading spinner when debugging and viewing local variables
       "sourceMapRenames": false,
       "env": {
         "AWS_PROFILE": "flo-ct-flo360"
@@ -24,7 +25,7 @@
       "skipFiles": ["<node_internals>/**"],
       "env": {
         "AWS_PROFILE": "flo-ct-flo360"
-      }
+      },
     },
     {
       "name": "Debug Tests - E2E",
@@ -36,14 +37,14 @@
       "skipFiles": ["<node_internals>/**"],
       "env": {
         "AWS_PROFILE": "flo-ct-flo360"
-      }
-    }
+      },
+    },
   ],
   "inputs": [
     {
       "id": "scopeTestsFileName",
       "type": "promptString",
-      "description": "Partial file name to scope test debugging to. ex. arena. Leave blank to run all tests."
+      "description": "Partial file name to scope test debugging to. ex. arena. Leave blank to run all tests.",
     }
   ]
 }
