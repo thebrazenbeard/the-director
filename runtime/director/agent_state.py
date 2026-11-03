@@ -299,20 +299,39 @@ class AgentStateLedger:
     def _admit(self, body: Mapping[str, object], digest: str, new_instance_id: str) -> None:
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            self._conn.execute(
+            inserted = self._conn.execute(
                 "INSERT INTO restored_capsules "
                 "(capsule_id, digest, source_instance_id, new_instance_id, agent_id, target_domain) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (body["capsule_id"], digest, body["source_instance_id"],
                  new_instance_id, body["agent_id"], body["target_domain"]),
             )
+            if inserted.rowcount != 1:
+                raise ValueError("restore receipt insert did not affect exactly one row")
+            # A trigger may silently ignore, delete, or rewrite the inserted
+            # row. Reject it before committing any invalid binding.
+            self._require_receipt(body, digest, new_instance_id)
             self._conn.execute("COMMIT")
+            # Only report an admitted inert copy after a committed readback.
+            self._require_receipt(body, digest, new_instance_id)
         except sqlite3.IntegrityError as exc:
-            self._conn.execute("ROLLBACK")
+            self._rollback_if_active()
+            if getattr(exc, "sqlite_errorname", "") not in (
+                "SQLITE_CONSTRAINT_PRIMARYKEY", "SQLITE_CONSTRAINT_UNIQUE"
+            ):
+                raise
             raise ValueError("capsule already restored or target instance already used") from exc
         except BaseException:
-            self._conn.execute("ROLLBACK")
+            self._rollback_if_active()
             raise
+
+    def _rollback_if_active(self) -> None:
+        """Do not replace an original failure after SQLite auto-rollback."""
+        if self._conn.in_transaction:
+            try:
+                self._conn.execute("ROLLBACK")
+            except sqlite3.DatabaseError:
+                pass
 
     def _check_available(self, capsule_id: str, new_instance_id: str) -> None:
         """Read-only collision check; admission must independently recheck."""
