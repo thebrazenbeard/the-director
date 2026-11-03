@@ -216,7 +216,9 @@ class IsolatedAgentRuntime:
                     process.stdin.close()
                 if process.stdout is not None:
                     process.stdout.close()
-            if reader is not None:
+            # Thread.start() itself can fail; joining a never-started Thread
+            # would mask that error and skip the directory/identity cleanup.
+            if reader is not None and reader.is_alive():
                 reader.join(timeout=2)
             if working is not None:
                 working.cleanup()

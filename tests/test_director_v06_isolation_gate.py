@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from runtime.director.agent_runtime import IsolatedAgentRuntime
+from runtime.director.agent_runtime import IsolatedAgentRuntime, _ACTIVE_IDS
 
 
 def _record():
@@ -29,6 +29,32 @@ def _approval():
 
 
 class IsolationGateTests(unittest.TestCase):
+    def test_reader_start_refusal_cleans_reservation_without_masking_error(self):
+        """A real Thread cannot be joined before its start was accepted."""
+        fake_process = Mock()
+        fake_process.wait.return_value = 0
+        fake_process.stdin = Mock()
+        fake_process.stdout = Mock()
+        fake_working = Mock()
+        fake_working.name = "unused-disposable-test-directory"
+        fake_reader = Mock()
+        fake_reader.start.side_effect = RuntimeError("original reader start refusal")
+        fake_reader.join.side_effect = RuntimeError("cannot join thread before it is started")
+        fake_reader.is_alive.return_value = False
+
+        self.assertNotIn("agent.copy", _ACTIVE_IDS)
+        with patch("runtime.director.agent_runtime.subprocess.Popen", return_value=fake_process), \
+             patch("runtime.director.agent_runtime.tempfile.TemporaryDirectory", return_value=fake_working), \
+             patch("runtime.director.agent_runtime.threading.Thread", return_value=fake_reader):
+            with self.assertRaisesRegex(RuntimeError, "original reader start refusal"):
+                IsolatedAgentRuntime.start(_record(), operator_approval=_approval())
+
+        fake_process.terminate.assert_called_once()
+        fake_process.wait.assert_called_once()
+        fake_reader.join.assert_not_called()
+        fake_working.cleanup.assert_called_once()
+        self.assertNotIn("agent.copy", _ACTIVE_IDS)
+
     def test_default_remains_data_only_process_with_explicit_boundary_status(self):
         with IsolatedAgentRuntime.start(_record(), operator_approval=_approval()) as runtime:
             status = runtime.status()
