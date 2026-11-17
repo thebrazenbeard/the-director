@@ -201,6 +201,74 @@ class RestoredStateResumeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cancelled"):
                 handoff(resume_agent_state_restore, raw, contender)
 
+    def test_restore_trigger_auto_rollback_preserves_original_failure(self):
+        """SQLite can end the transaction itself before Python cleanup runs."""
+        raw = capsule()
+        with AgentStateLedger(self.path) as ledger:
+            ledger._conn.execute(
+                "CREATE TRIGGER rollback_restore BEFORE INSERT ON restored_capsules "
+                "BEGIN SELECT RAISE(ROLLBACK, 'original restore failure'); END"
+            )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "original restore failure"):
+                handoff(restore_agent_state, raw, ledger)
+            self.assertFalse(ledger._conn.in_transaction)
+            self.assertEqual(
+                0, ledger._conn.execute("SELECT count(*) FROM restored_capsules").fetchone()[0]
+            )
+            ledger._conn.execute("DROP TRIGGER rollback_restore")
+            restored = handoff(restore_agent_state, raw, ledger)
+            self.assertEqual("NOT_EXECUTED", restored["effects"])
+
+    def test_restore_failed_begin_preserves_database_lock_error(self):
+        raw = capsule()
+        with AgentStateLedger(self.path) as owner, AgentStateLedger(self.path) as contender:
+            contender._conn.execute("PRAGMA busy_timeout=0")
+            owner._conn.execute("BEGIN IMMEDIATE")
+            try:
+                with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+                    handoff(restore_agent_state, raw, contender)
+                self.assertFalse(contender._conn.in_transaction)
+            finally:
+                owner._conn.execute("ROLLBACK")
+            restored = handoff(restore_agent_state, raw, contender)
+            self.assertEqual("NOT_EXECUTED", restored["effects"])
+
+    def test_restore_never_acknowledges_missing_or_modified_receipt(self):
+        raw = capsule()
+        triggers = {
+            "ignored": (
+                "CREATE TRIGGER faulty_insert BEFORE INSERT ON restored_capsules "
+                "BEGIN SELECT RAISE(IGNORE); END"
+            ),
+            "deleted": (
+                "CREATE TRIGGER faulty_insert AFTER INSERT ON restored_capsules "
+                "BEGIN DELETE FROM restored_capsules WHERE capsule_id=NEW.capsule_id; END"
+            ),
+            "mutated": (
+                "CREATE TRIGGER faulty_insert AFTER INSERT ON restored_capsules "
+                "BEGIN UPDATE restored_capsules SET digest='invalid' "
+                "WHERE capsule_id=NEW.capsule_id; END"
+            ),
+        }
+        for failure, statement in triggers.items():
+            with self.subTest(failure=failure):
+                database = Path(self.temp.name) / f"{failure}.sqlite3"
+                with AgentStateLedger(database) as ledger:
+                    ledger._conn.execute(statement)
+                    with self.assertRaisesRegex(ValueError, "restore receipt"):
+                        handoff(restore_agent_state, raw, ledger)
+                    self.assertFalse(ledger._conn.in_transaction)
+                    self.assertEqual(
+                        0, ledger._conn.execute(
+                            "SELECT count(*) FROM restored_capsules"
+                        ).fetchone()[0]
+                    )
+                    ledger._conn.execute("DROP TRIGGER faulty_insert")
+                    restored = handoff(restore_agent_state, raw, ledger)
+                    resumed = handoff(resume_agent_state_restore, raw, ledger)
+                    self.assertEqual(restored, resumed)
+                    self.assertEqual("NOT_EXECUTED", restored["effects"])
+
     def test_cancel_after_resume_does_not_revoke_returned_data(self):
         raw = capsule()
         self._admit_and_drop_response(raw)
