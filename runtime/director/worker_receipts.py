@@ -161,7 +161,13 @@ class DurableWorkerReceipts:
             yield conn
             conn.execute("COMMIT")
         except BaseException:
-            conn.execute("ROLLBACK")
+            # SQLite RAISE(ROLLBACK) may already have ended the transaction.
+            # A redundant cleanup error must not mask the original failure.
+            if conn.in_transaction:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.DatabaseError:
+                    pass
             raise
 
     @staticmethod
