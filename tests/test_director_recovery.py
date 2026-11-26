@@ -285,6 +285,60 @@ class RecoveryStoreTests(unittest.TestCase):
             with self.assertRaises(RecoveryIntegrityError):
                 reopened.get_restore("r1")
 
+    def test_trigger_auto_rollback_preserves_original_checkpoint_error(self):
+        conn = self.store._connection()
+        conn.execute(
+            "CREATE TRIGGER faulty_checkpoint BEFORE INSERT ON director_recovery_checkpoints "
+            "BEGIN SELECT RAISE(ROLLBACK, 'original checkpoint failure'); END"
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "original checkpoint failure"):
+            self._checkpoint()
+        self.assertFalse(conn.in_transaction)
+        self.assertEqual(0, conn.execute("SELECT count(*) FROM director_recovery_checkpoints").fetchone()[0])
+        conn.execute("DROP TRIGGER faulty_checkpoint")
+        self.assertEqual(1, self._checkpoint()["generation"])
+
+    def test_checkpoint_must_have_exact_committed_receipt(self):
+        triggers = {
+            "ignore": "BEFORE INSERT ON director_recovery_checkpoints BEGIN SELECT RAISE(IGNORE); END",
+            "delete": "AFTER INSERT ON director_recovery_checkpoints BEGIN DELETE FROM director_recovery_checkpoints WHERE checkpoint_id=NEW.checkpoint_id; END",
+            "tamper": "AFTER INSERT ON director_recovery_checkpoints BEGIN UPDATE director_recovery_checkpoints SET record_digest='corrupt' WHERE checkpoint_id=NEW.checkpoint_id; END",
+        }
+        for case, declaration in triggers.items():
+            with self.subTest(case=case), RecoveryStore(Path(self.tmp.name) / f"checkpoint-{case}.sqlite3") as store:
+                conn = store._connection()
+                conn.execute(f"CREATE TRIGGER faulty_checkpoint {declaration}")
+                with self.assertRaisesRegex(RecoveryIntegrityError, "checkpoint receipt"):
+                    store.checkpoint("one", owner_id="owner1", target_domain="local.domain",
+                                     generation=1, coordinator_snapshot=_coordinator(), consent=_consent())
+                self.assertFalse(conn.in_transaction)
+                self.assertEqual(0, conn.execute("SELECT count(*) FROM director_recovery_checkpoints").fetchone()[0])
+                conn.execute("DROP TRIGGER faulty_checkpoint")
+                store.checkpoint("one", owner_id="owner1", target_domain="local.domain",
+                                 generation=1, coordinator_snapshot=_coordinator(), consent=_consent())
+                self.assertEqual(1, store.preview_restore("one", approval=_approval())["source_generation"])
+
+    def test_restore_must_have_exact_committed_receipt(self):
+        triggers = {
+            "ignore": "BEFORE INSERT ON director_recovery_restores BEGIN SELECT RAISE(IGNORE); END",
+            "delete": "AFTER INSERT ON director_recovery_restores BEGIN DELETE FROM director_recovery_restores WHERE restore_id=NEW.restore_id; END",
+            "tamper": "AFTER INSERT ON director_recovery_restores BEGIN UPDATE director_recovery_restores SET record_digest='corrupt' WHERE restore_id=NEW.restore_id; END",
+        }
+        for case, declaration in triggers.items():
+            with self.subTest(case=case), RecoveryStore(Path(self.tmp.name) / f"restore-{case}.sqlite3") as store:
+                store.checkpoint("one", owner_id="owner1", target_domain="local.domain",
+                                 generation=1, coordinator_snapshot=_coordinator(), consent=_consent())
+                conn = store._connection()
+                conn.execute(f"CREATE TRIGGER faulty_restore {declaration}")
+                with self.assertRaisesRegex(RecoveryIntegrityError, "restore receipt"):
+                    store.restore("one", restore_id="r1", approval=_approval())
+                self.assertFalse(conn.in_transaction)
+                self.assertEqual(0, conn.execute("SELECT count(*) FROM director_recovery_restores").fetchone()[0])
+                conn.execute("DROP TRIGGER faulty_restore")
+                admitted = store.restore("one", restore_id="r1", approval=_approval())
+                self.assertEqual(admitted, store.get_restore("r1"))
+                self.assertEqual("NOT_EXECUTED", admitted["effect_status"])
+
     def test_uncommitted_checkpoint_disappears_after_crash_like_close(self):
         # The public method always commits atomically; exercise SQLite's
         # uncommitted-write rollback as a controlled crash simulation.
