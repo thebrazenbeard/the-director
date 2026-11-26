@@ -124,6 +124,42 @@ def _read_thread(process: subprocess.Popen[bytes], responses: queue.Queue[bytes 
         responses.put(None)
 
 
+def _cleanup_owned_resources(process: subprocess.Popen[bytes] | None,
+                             reader: threading.Thread | None,
+                             working: tempfile.TemporaryDirectory[str] | None) -> list[Exception]:
+    """Attempt every local cleanup even if another cleanup operation fails."""
+    errors: list[Exception] = []
+    if process is not None:
+        for stream in (process.stdin, process.stdout):
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception as exc:
+                    errors.append(exc)
+    if reader is not None:
+        try:
+            if reader.is_alive():
+                reader.join(timeout=2)
+                if reader.is_alive():
+                    errors.append(RuntimeError("reader did not stop after cleanup"))
+        except Exception as exc:
+            errors.append(exc)
+    if working is not None:
+        try:
+            working.cleanup()
+        except Exception as exc:
+            errors.append(exc)
+    return errors
+
+
+def _confirmed_exit(process: subprocess.Popen[bytes]) -> bool:
+    """Only a successful wait or an observed exit permits ID release."""
+    try:
+        return process.poll() is not None
+    except Exception:
+        return False
+
+
 class IsolatedAgentRuntime:
     """A manually started, bounded local **process** holding copied state.
 
@@ -142,6 +178,7 @@ class IsolatedAgentRuntime:
         self._reader = reader
         self._timeout = request_timeout
         self._closed = False
+        self._cleanup_pending = False
         self._request_lock = threading.RLock()
 
     @classmethod
@@ -201,27 +238,37 @@ class IsolatedAgentRuntime:
             if startup.get("op") != "READY" or startup.get("instance_id") != instance_id:
                 raise RuntimeError("isolated worker rejected the software-state record")
             return runtime
-        except BaseException:
+        except BaseException as original:
+            exited = process is None
             if process is not None:
                 try:
                     process.terminate()
-                except OSError:
+                except Exception:
                     pass
                 try:
                     process.wait(timeout=3)
+                    exited = True
                 except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=3)
-                if process.stdin is not None:
-                    process.stdin.close()
-                if process.stdout is not None:
-                    process.stdout.close()
-            if reader is not None:
-                reader.join(timeout=2)
-            if working is not None:
-                working.cleanup()
-            with _ACTIVE_LOCK:
-                _ACTIVE_IDS.discard(instance_id)
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+                    try:
+                        process.wait(timeout=3)
+                        exited = True
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                exited = exited or _confirmed_exit(process)
+            failures = _cleanup_owned_resources(process, reader, working)
+            if failures:
+                original.add_note("Secondary local startup cleanup failed; host cleanup unverified")
+            if exited:
+                with _ACTIVE_LOCK:
+                    _ACTIVE_IDS.discard(instance_id)
+            else:
+                original.add_note("Child exit unverified; instance reservation retained")
             raise
 
     def _exchange(self, request: Mapping[str, object], *, startup: bool = False) -> dict[str, object]:
@@ -289,9 +336,11 @@ class IsolatedAgentRuntime:
     def close(self) -> None:
         """Attempt cooperative shutdown, then terminate only our child."""
         with self._request_lock:
-            if self._closed:
+            if self._closed and not self._cleanup_pending:
                 return
             self._closed = True
+            errors: list[Exception] = []
+            exited = False
             try:
                 if self.process.poll() is None and self.process.stdin is not None:
                     try:
@@ -301,22 +350,26 @@ class IsolatedAgentRuntime:
                         pass
                 try:
                     self.process.wait(timeout=min(self._timeout, 2.0))
+                    exited = True
                 except subprocess.TimeoutExpired:
                     self.process.terminate()
                     try:
                         self.process.wait(timeout=2)
+                        exited = True
                     except subprocess.TimeoutExpired:
                         self.process.kill()
                         self.process.wait(timeout=2)
-            finally:
-                if self.process.stdin is not None:
-                    self.process.stdin.close()
-                if self.process.stdout is not None:
-                    self.process.stdout.close()
-                self._reader.join(timeout=2)
-                self._working.cleanup()
+                        exited = True
+            except Exception as exc:
+                errors.append(exc)
+            exited = exited or _confirmed_exit(self.process)
+            errors.extend(_cleanup_owned_resources(self.process, self._reader, self._working))
+            if exited:
                 with _ACTIVE_LOCK:
                     _ACTIVE_IDS.discard(self._instance_id)
+            self._cleanup_pending = bool(errors) or not exited
+            if self._cleanup_pending:
+                raise RuntimeError("isolated agent cleanup incomplete") from (errors[0] if errors else None)
 
     def __enter__(self) -> "IsolatedAgentRuntime":
         if self._closed:
